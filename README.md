@@ -15,10 +15,10 @@
 
 | No. | タイトル | 対象リポジトリ | Status |
 |---|---|---|---|
-| [ADR-001](docs/adr/ADR-001-gitops-engine.md) | GitOpsエンジンの選択 | platform-gitops / platform-infra | Accepted |
-| [ADR-002](docs/adr/ADR-002-helm-library-chart.md) | Kubernetesマニフェスト抽象化方法の選択 | platform-charts / platform-gitops | Accepted |
-| [ADR-003](docs/adr/ADR-003-secrets-management.md) | Secret管理戦略の選択 | platform-gitops | Accepted（一部検証中） |
-| [ADR-004](docs/adr/ADR-004-postgresql-operator.md) | PostgreSQL Operatorの選択 | platform-gitops / platform-charts | Accepted |
+| [ADR-001](adr/ADR-001-gitops-engine.md) | GitOpsエンジンの選択 | platform-gitops / platform-infra | Accepted |
+| [ADR-002](adr/ADR-002-helm-library-chart.md) | Kubernetesマニフェスト抽象化方法の選択 | platform-charts / platform-gitops | Accepted |
+| [ADR-003](adr/ADR-003-secrets-management.md) | Secret管理戦略の選択 | platform-gitops | Accepted（一部検証中） |
+| [ADR-004](adr/ADR-004-postgresql-operator.md) | PostgreSQL Operatorの選択 | platform-gitops / platform-charts | Accepted |
 
 ---
 
