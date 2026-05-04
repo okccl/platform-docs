@@ -1,0 +1,15 @@
+apiVersion: backstage.io/v1alpha1
+kind: Component
+metadata:
+  name: platform-docs
+  description: ADR・Runbook・作業ログなどプラットフォーム全体のドキュメント
+  annotations:
+    github.com/project-slug: okccl/platform-docs
+  tags:
+    - documentation
+    - adr
+spec:
+  type: documentation
+  lifecycle: production
+  owner: user:platform-admin
+  system: platform
