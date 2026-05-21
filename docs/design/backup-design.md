@@ -46,6 +46,7 @@ PostgreSQL（CNPG Pod）
 |---|---|---|---|
 | Backstage DB | backstage | 17 | 1Gi（local-path-retain） |
 | Keycloak DB | keycloak | 17 | 2Gi（local-path-retain） |
+| sample-backend DB | sample-app | 17 | 1Gi（local-path-retain） |
 
 バックアップのデータ種別は以下の2種類。
 
