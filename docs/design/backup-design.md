@@ -119,3 +119,85 @@ platform-gitops/platform/secrets/sources/minio-backup-secret-source.yaml  ← SO
 ```
 
 認証情報を各 namespace に ExternalSecret で配布しているのは、CNPG Cluster の `spec.backup.barmanObjectStore.s3Credentials` が同一 namespace の Secret しか参照できないためである。Secret の実体は `platform-secrets` namespace に1つだけ存在し、ESO がコピーを配布する形をとることで、認証情報のソースを一元管理している。
+
+---
+
+## 4. 第2層：MinIO → GCS（クラウドバックアップ）
+
+### 4.1 クラウドバックアップを追加する理由
+
+MinIO は WSL ホスト上の Docker コンテナ（`minio-external`）として稼働しているため、WSL 全損（PC 故障・OS 再インストール等）が発生した場合は MinIO のデータも失われる。第1層だけでは WSL 全損シナリオに対応できない。
+
+GCS にオフサイトコピーを持つことで、ローカル環境が完全に失われた場合でも DB データを復旧できる。
+
+### 4.2 コンポーネント構成
+
+| コンポーネント | 役割 | 備考 |
+|---|---|---|
+| rclone | MinIO → GCS の同期ツール | aqua で管理 |
+| GCS バケット | バックアップ保存先 | Always Free: 5GB / 月 |
+| GCP Service Account | GCS への書き込み認証 | バケット限定の最小権限 |
+| `backup-to-gcs.sh` | バックアップ実行スクリプト | `platform-infra/scripts/` |
+| WSL crontab | 日次自動実行 | 毎日 23:00 |
+| `make backup-to-gcs` | 手動実行 Makefile ターゲット | |
+
+### 4.3 同期方式の選択（copy vs sync）
+
+`rclone copy` を採用し、`rclone sync` は採用しない。
+
+MinIO 側では CNPG の `retentionPolicy: 7d` により古いバックアップが自動削除される。`rclone sync` にすると、MinIO の削除が GCS にも伝播し、クラウド側でも 7 日分しか保持できなくなる。これでは WSL 全損時の復旧窓口がローカルと変わらず、クラウドバックアップの意義が薄れる。
+
+`rclone copy` にすることで GCS 側には累積保存し、GCS の Object Lifecycle ルールで 30 日後に自動削除する。ローカル 7 日 / クラウド 30 日という差別化した保持期間を実現している。
+
+### 4.4 GCS 設定（リージョン・クラス・ライフサイクル）
+
+| 項目 | 値 | 理由 |
+|---|---|---|
+| バケット名 | `ccl-platform-cnpg-backup` | |
+| リージョン | `us-central1` | GCS Always Free（5GB / 月）の対象リージョン |
+| ストレージクラス | Standard | Always Free 対象。Nearline / Coldline は小容量では最低保存期間の縛りがあり割高になる |
+| Object Lifecycle | Age: 30 日 → Delete | ローカル 7 日より長期保持しつつコスト増を抑える |
+| バージョニング | 無効 | 同名ファイルは上書き運用のため不要 |
+
+Always Free の 5GB / 月制限について：現在のバックアップサイズは約 314MB。30 日累積でも 5GB 以内に収まる見込みのため、GCS の利用コストは実質ゼロを想定している。
+
+### 4.5 rclone を選択した理由
+
+MinIO（S3 互換 API）と GCS（Google Cloud Storage）の両方をソース・デスティネーションとして扱えるツールが必要になる。候補と評価は以下。
+
+| ツール | 評価 |
+|---|---|
+| gsutil | GCS 公式 CLI だが MinIO（S3 互換）からの読み取りには対応していない |
+| mc（MinIO Client） | MinIO 公式 CLI だが GCS への書き込みは S3 互換エンドポイント経由のみで信頼性が低い |
+| rclone | S3 互換と GCS の両方をネイティブサポート。設定ファイルなしでコマンドライン引数だけで完結できる |
+
+rclone はコマンドライン引数でバックエンドを指定できるため、設定ファイルをファイルシステムに残さずに済む。これにより SA キーのような認証情報の漏洩リスクを軽減できる。
+
+### 4.6 認証情報管理（SOPS × Age）
+
+GCP Service Account のキー（JSON）は SOPS × Age で暗号化して platform-infra の Git で管理する。
+
+スクリプト実行時に SOPS で復号して `/tmp` に一時展開し、rclone 終了後に `trap EXIT` で削除する。
+
+```
+platform-infra/secrets/gcp-backup-sa-key.enc.json  ← SOPS 暗号化 SA キー
+  ↓ スクリプト実行時に SOPS 復号
+  /tmp/gcp-backup-sa-key.json（一時ファイル）
+  ↓ rclone の --gcs-service-account-file に渡す
+  ↓ 終了後に trap EXIT で削除
+```
+
+SA 権限は `roles/storage.objectAdmin`（対象バケット限定の最小権限）。
+
+MinIO の認証情報は platform-gitops で管理している SOPS 暗号化ファイル（`minio-backup-secret-source.yaml`）からスクリプト実行時に復号して取得する。MinIO コンテナには `MINIO_ROOT_PASSWORD_FILE` が設定されており `docker inspect` では正確な値が取れないためこの方式を採用した。
+
+### 4.7 実行スケジュール
+
+| 時刻 | 処理 |
+|---|---|
+| 毎日 21:00 | CNPG ScheduledBackup（MinIO へのベースバックアップ） |
+| 毎日 23:00 | WSL cron：`backup-to-gcs.sh` 実行（MinIO → GCS） |
+
+21:00 の ScheduledBackup が完了してから十分な余裕を持って 23:00 に GCS へ同期する設計になっている。
+
+PC の電源がオフの場合は cron が実行されないため、バックアップがスキップされる可能性がある。個人 PC での運用という制約上、これは許容する。
