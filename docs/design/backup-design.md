@@ -230,9 +230,7 @@ CNPG の Prometheus メトリクスをもとに PrometheusRule を定義し、Al
 
 ### 5.2 第2層（MinIO → GCS）のアラート
 
-第2層は WSL ホスト上の cron で動作するため、Prometheus / AlertManager の監視対象外となる。そのため `backup-to-gcs.sh` のスクリプト内でエラーを検知し、Discord Webhook へ直接 POST する方針とする。
-
-成功・失敗ともに通知することで、「昨日の通知がない＝スキップまたは失敗」と判断できるハートビート的な運用も兼ねる。
+第2層は WSL ホスト上の cron で動作するため、Prometheus / AlertManager の監視対象外となる。そのため `backup-to-gcs.sh` のスクリプト内でエラーを検知し、Discord Webhook へ直接 POST する方針とする。通知は失敗時のみとし、CNPG アラートと通知方針を揃える。
 
 ---
 
