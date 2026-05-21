@@ -54,7 +54,17 @@ PostgreSQL（CNPG Pod）
 | WAL アーカイブ | PostgreSQL の Write-Ahead Log。変更をリアルタイムで転送 | 随時（CNPG が自動管理） |
 | ベースバックアップ | フルダンプ相当。WAL リプレイの起点となる | 毎日 21:00（ScheduledBackup） |
 
-ストレージクラスに `local-path-retain`（reclaimPolicy: Retain）を使用しているのは、クラスター全損時に PVC が削除されても PV 上のデータを保全するためである。ただし MinIO によるオフサイトバックアップが正式な DR 手段であり、PV の Retain はあくまで補助的な保護に留まる。
+ストレージクラスに `local-path-retain`（reclaimPolicy: Retain）を使用しているのは、MinIO 復元フロー中の切り戻し時に PV データを保全するためである。k3d クラスター全損（`k3d cluster delete`）では Docker ボリュームごと消えるため reclaimPolicy は関係ない。
+
+Retain が必要な場面は、recovery クラスターを削除して ArgoCD の initdb クラスターに切り戻す際である。
+
+```
+1. recovery クラスターを削除
+   ├─ [Retain あり] PV が Released 状態で残る → データ保全
+   └─ [Retain なし] PV ごと削除 → 復元データが消える
+2. ArgoCD の initdb クラスターが PVC を作成 → 既存 PV にバインド
+3. CNPG が PV 上のデータを検知 → bootstrap をスキップ → 通常運用に復帰
+```
 
 ---
 
