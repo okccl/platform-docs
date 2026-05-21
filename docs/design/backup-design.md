@@ -1,6 +1,6 @@
 # バックアップ設計書
 
-> **ステータス**: 作成中（1〜3章のみ記述済み）
+> **ステータス**: 作成中（4章クラウドバックアップ実装後に実装内容を反映予定）
 
 ---
 
@@ -211,3 +211,50 @@ MinIO の認証情報は platform-gitops で管理している SOPS 暗号化フ
 21:00 の ScheduledBackup が完了してから十分な余裕を持って 23:00 に GCS へ同期する設計になっている。
 
 PC の電源がオフの場合は cron が実行されないため、バックアップがスキップされる可能性がある。個人 PC での運用という制約上、これは許容する。
+
+---
+
+## 5. 監視・アラート
+
+### 5.1 第1層（CNPG → MinIO）のアラート
+
+CNPG の Prometheus メトリクスをもとに PrometheusRule を定義し、AlertmanagerConfig で Discord に通知する。
+
+| アラート名 | 検知内容 | 重大度 |
+|---|---|---|
+| `CNPGWalArchivingFailing` | WAL アーカイブ失敗（MinIO への接続断等） | critical |
+| `CNPGBackupNotTaken` | 最終成功バックアップから 25 時間以上経過 | warning |
+| `CNPGLastBackupFailed` | 最新の ScheduledBackup が失敗 | warning |
+
+`CNPGWalArchivingFailing` を critical にしているのは、WAL アーカイブが止まると PITR の連続性が失われ、ベースバックアップ間のデータが復旧不能になるためである。
+
+### 5.2 第2層（MinIO → GCS）のアラート
+
+第2層は WSL ホスト上の cron で動作するため、Prometheus / AlertManager の監視対象外となる。そのため `backup-to-gcs.sh` のスクリプト内でエラーを検知し、Discord Webhook へ直接 POST する方針とする。
+
+成功・失敗ともに通知することで、「昨日の通知がない＝スキップまたは失敗」と判断できるハートビート的な運用も兼ねる。
+
+---
+
+## 6. リストア（DR 連携）
+
+リストアの詳細手順は `platform-docs/docs/design/DR-design.md` に記載する。ここではバックアップ設計との接続点のみを示す。
+
+### 6.1 クラスター全損時（MinIO からリストア）
+
+`make generate-dr-manifests` で recovery クラスターのマニフェストを動的生成し、MinIO 上のバックアップを使って復旧する。生成スクリプトは platform-gitops の CNPG Cluster 定義を読み取るため、クラスター設定変更後もマニフェストが最新の状態を反映する。
+
+### 6.2 WSL 全損時（GCS からリストア）
+
+GCS から MinIO へデータを手動で戻したうえで同じ DR 手順を実施する。または recovery クラスターの `endpointURL` を GCS の S3 互換エンドポイントに変更して直接リストアすることも可能。どちらの手順も同一の recovery マニフェストを起点とする設計になっている。
+
+---
+
+## 7. 既知のリスクと許容判断
+
+| リスク | 内容 | 許容判断 |
+|---|---|---|
+| PC 電源オフ時のクラウド同期スキップ | WSL cron は PC 起動中のみ実行される。深夜に PC が停止していると GCS 同期がスキップされる | 個人 PC 運用の制約として許容。Discord 通知で翌朝確認できる |
+| GCS Always Free 5GB 制限 | 現在のバックアップサイズ約 314MB。30 日累積でも 5GB 以内の見込みだが、DB が増加した場合は超過の可能性がある | 現時点では枠内。超過時は Lifecycle 期間の短縮や対象 DB の見直しで対応する |
+| MinIO コンテナ停止時のバックアップ失敗 | `minio-external` が停止すると WAL アーカイブと ScheduledBackup が失敗する | `CNPGWalArchivingFailing` アラートで検知可能。Discord 通知で即時対応できる |
+| WSL cron サービス停止 | WSL の cron サービスが停止すると GCS 同期が実行されない | Discord 通知の途絶で間接的に検知できる。cron サービスは WSL 起動時に自動起動するよう設定する |
