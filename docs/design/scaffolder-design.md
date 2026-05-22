@@ -47,3 +47,30 @@
 ## 4. 開発環境セットアップの組み込み（aqua.yaml）
 
 （作成中）
+
+---
+
+## 5. GitHub 統合設計
+
+### 5.1 認証方式の分離
+
+Backstage の GitHub 連携は用途ごとに異なる認証方式を使用する。
+
+| 用途 | 方式 | 設定箇所 |
+|---|---|---|
+| ユーザーログイン | GitHub OAuth App | `auth.providers.github` |
+| API アクセス（カタログ読み取り・Scaffolder） | Fine-grained PAT | `integrations.github.token` |
+
+### 5.2 Scaffolder に GitHub App を使わない理由
+
+`integrations.github` に GitHub App（installation token）を使用すると、`publish:github` アクションでのリポジトリ作成が失敗する。
+
+**原因:** GitHub App の installation token（server-to-server）は `POST /user/repos` エンドポイントを呼び出せない。このエンドポイントはパーソナルアカウント配下のリポジトリを作成する際に使用されるが、installation token の権限スコープ外となっている。Organization アカウントであれば `POST /orgs/{org}/repos` が使用されるため問題ないが、`okccl` はパーソナルアカウントであるためこの制約に該当する。
+
+**対処:** `integrations.github` は Fine-grained PAT に切り替え、GitHub App は OAuth ログイン専用とする。Fine-grained PAT は以下の権限のみに限定し、最小権限の原則を維持する。
+
+- Repository permissions: `Administration: Read & Write`（リポジトリ作成）
+- Repository permissions: `Contents: Read & Write`（コードプッシュ・カタログ読み取り）
+- Repository permissions: `Pull requests: Read & Write`（apps-gitops への PR 作成）
+
+> **将来的な移行:** `okccl` を GitHub Organization に変換した場合は GitHub App に戻すことができる。
