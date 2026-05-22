@@ -12,6 +12,8 @@
 | 8 | user-apps-infra を ApplicationSet に変換 |
 | 9 | ClusterExternalSecret 追加（minio-backup-secret 自動配布） |
 | 10 | Backstage OIDC 認証障害の対処 |
+| 11 | Backstage GitHub 統合を GitHub App から PAT に切り替え |
+| 12 | E2E 検証（Scaffolder 全フロー） |
 
 ---
 
@@ -286,3 +288,82 @@ kubectl rollout restart deployment/backstage -n backstage
 | `apps-gitops/apps/sample/sample-backend/application.yaml` | project・パス修正 |
 | `apps-gitops/apps/sample/sample-frontend/application.yaml` | project・パス修正 |
 | `platform-infra/k3d/apps-root.yaml` | include パターン変更 |
+| `platform-gitops/platform/secrets/sources/backstage-github-app-source.yaml` | githubPat 追加・App 認証情報（appId/clientId/clientSecret/privateKey）削除 |
+| `platform-gitops/platform/secrets/config/backstage-secret.yaml` | GITHUB_APP_* マッピング削除・GITHUB_PAT マッピング追加 |
+| `platform-gitops/platform/backstage/values.yaml` | integrations.github を apps: → token: に変更・GITHUB_APP_* env 削除・GITHUB_PAT env 追加 |
+
+---
+
+## 11. Backstage GitHub 統合を GitHub App から PAT に切り替え
+
+### 背景
+
+E2E 検証中、Scaffolder の「バックエンドリポジトリ作成」ステップで以下のエラーが発生した。
+
+```
+Failed to create the User repository okccl/myapp-backend,
+Resource not accessible by integration
+```
+
+### 原因
+
+`okccl` は GitHub の**パーソナルアカウント**（Organization ではない）。GitHub App の installation token（server-to-server）は `POST /user/repos`（個人アカウントのリポジトリ作成 API）を呼び出せない仕様となっており、Organization の `POST /orgs/{org}/repos` のみサポートされる。
+
+以前の Scaffolder テストでは新規リポジトリを実際に作成する検証をしていなかったため、この制限が表面化していなかった。
+
+### 対処
+
+`integrations.github` を GitHub App から Fine-grained PAT に切り替え、GitHub App は OAuth ログイン専用（`auth.providers.github`）とした。
+
+**PAT に付与した権限:**
+
+| Permission | 用途 |
+|---|---|
+| Administration: R/W | リポジトリ作成 |
+| Contents: R/W | コードプッシュ・カタログ読み取り |
+| Workflows: R/W | `.github/workflows/` ファイルのプッシュ |
+| Pull requests: R/W | apps-gitops への PR 作成 |
+| Actions: R/W | teardown テンプレートの workflow dispatch |
+
+ユーザーが GitHub で Fine-grained PAT を作成し、SOPS ファイルに `githubPat` を追加（App 認証情報は同時に削除）。
+
+```yaml
+# integrations.github の変更
+# 変更前
+apps:
+  - appId: ${GITHUB_APP_ID}
+    clientId: ${GITHUB_APP_CLIENT_ID}
+    clientSecret: ${GITHUB_APP_CLIENT_SECRET}
+    privateKey: ${GITHUB_APP_PRIVATE_KEY}
+
+# 変更後
+token: ${GITHUB_PAT}
+```
+
+> **将来的な移行:** `okccl` を GitHub Organization に変換した場合は GitHub App に戻すことができる。
+
+### トラブル: ExternalSecret の spec.data 配列が SSA で更新できない
+
+`external-secrets-config` Application に `ServerSideApply=true` が設定されており、`spec.data` 配列からのエントリ削除（GITHUB_APP_* の除去）が SSA では実行できなかった。ArgoCD の sync は "replaced" と報告するが spec は変わらないままの状態が続いた。
+
+根本原因は2つ:
+1. `platform-secrets-sources` が未 sync で、ソース Secret（`backstage-github-app-source`）に `githubPat` フィールドが存在していなかった
+2. SSA では配列要素の削除が正常に機能しない（`Replace=true` アノテーションを追加したが、ソース Secret 未 sync が先決だった）
+
+`platform-secrets-sources` を明示的に sync した後、ユーザーが ExternalSecret をクラスタ上で手動削除・ArgoCD 再作成することで解消。`Replace=true` アノテーションは解消後に削除した。
+
+---
+
+## 12. E2E 検証（Scaffolder 全フロー）
+
+Backstage Scaffolder でアプリ名 `myapp`、DB 有効で全フローを実行し、以下をすべて確認した。
+
+| 確認項目 | 結果 |
+|---|---|
+| `myapp-backend` / `myapp-frontend` リポジトリ作成 | ✅ |
+| apps-gitops PR 作成・自動マージ | ✅ |
+| `apps/myapp/` ディレクトリ構造（app.yaml + backend/frontend） | ✅ |
+| ApplicationSet が `user-apps-infra-myapp` を生成 | ✅ |
+| `AppProject: myapp` 自動生成 | ✅ |
+| `Namespace: myapp`（`app-type: user-app` ラベル付き）自動生成 | ✅ |
+| `minio-backup-secret` 自動配布（ClusterExternalSecret 経由） | ✅ |
