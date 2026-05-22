@@ -69,8 +69,12 @@ Backstage の GitHub 連携は用途ごとに異なる認証方式を使用す�
 
 **対処:** `integrations.github` は Fine-grained PAT に切り替え、GitHub App は OAuth ログイン専用とする。Fine-grained PAT は以下の権限のみに限定し、最小権限の原則を維持する。
 
-- Repository permissions: `Administration: Read & Write`（リポジトリ作成）
-- Repository permissions: `Contents: Read & Write`（コードプッシュ・カタログ読み取り）
-- Repository permissions: `Pull requests: Read & Write`（apps-gitops への PR 作成）
+| Permission | 用途 |
+|---|---|
+| `Administration: Read & Write` | リポジトリ作成（`publish:github`） |
+| `Contents: Read & Write` | コードプッシュ・カタログ読み取り |
+| `Workflows: Read & Write` | `.github/workflows/` ファイルのプッシュ |
+| `Pull requests: Read & Write` | apps-gitops への PR 作成（`publish:github:pull-request`） |
+| `Actions: Read & Write` | teardown テンプレートの workflow dispatch（`github:actions:dispatch`） |
 
 > **将来的な移行:** `okccl` を GitHub Organization に変換した場合は GitHub App に戻すことができる。
