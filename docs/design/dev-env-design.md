@@ -84,8 +84,10 @@ Backstage Scaffolder でアプリ払い出し時に基本セットの `aqua.yaml
 
 ## 4. アプリリポジトリへの aqua.yaml 払い出し
 
-アプリ払い出し時に Backstage Scaffolder が基本セットの `aqua.yaml` を自動生成する。  
-Scaffolder の設計詳細は `scaffolder-design.md` を参照。
+Backstage Scaffolder の fullstack テンプレートが、backend / frontend 各リポジトリに
+`aqua.yaml` を自動生成する。開発者はクローン後に `aqua install` 1 コマンドでツールが揃う。
+
+払い出される内容・バージョン同期の制約は `scaffolder-design.md` 4 章を参照。
 
 ---
 
