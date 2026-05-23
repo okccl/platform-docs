@@ -14,6 +14,9 @@
 | 10 | Backstage OIDC 認証障害の対処 |
 | 11 | Backstage GitHub 統合を GitHub App から PAT に切り替え |
 | 12 | E2E 検証（Scaffolder 全フロー） |
+| 13 | fullstack テンプレート: 新規リポジトリへの GITOPS_APP_CLIENT_ID 自動設定 |
+| 14 | teardown ワークフローのバグ修正（変数名誤り・rm パス誤り・GHCR エンドポイント誤り・リポジトリ削除を手動対応に変更） |
+| 15 | GITOPS_TOKEN 未使用 secret の削除 |
 
 ---
 
@@ -367,3 +370,112 @@ Backstage Scaffolder でアプリ名 `myapp`、DB 有効で全フローを実行
 | `AppProject: myapp` 自動生成 | ✅ |
 | `Namespace: myapp`（`app-type: user-app` ラベル付き）自動生成 | ✅ |
 | `minio-backup-secret` 自動配布（ClusterExternalSecret 経由） | ✅ |
+
+---
+
+## 13. fullstack テンプレート: 新規リポジトリへの GITOPS_APP_CLIENT_ID 自動設定
+
+### 背景
+
+E2E 検証で作成した `myapp-backend` の initial commit CI が失敗していた。
+
+```
+Error: The 'client-id' (or deprecated 'app-id') input must be set to a non-empty string.
+```
+
+### 原因
+
+`build.yaml` スケルトンは `vars.GITOPS_APP_CLIENT_ID` と `secrets.GITOPS_APP_PRIVATE_KEY` を参照するが、Scaffolder がリポジトリを作成しても GitHub Actions の Variables / Secrets は自動設定されない。`sample-backend` / `sample-frontend` は手動で設定済みのため動作していたが、新規払い出しリポジトリには設定がなかった。
+
+### 対処
+
+`publish:github` アクションの `repoVariables` パラメータを使い、リポジトリ作成と同時に `GITOPS_APP_CLIENT_ID` を自動設定するよう `template.yaml` に追加した。
+
+```yaml
+- id: publish-backend
+  action: publish:github
+  input:
+    repoVariables:
+      GITOPS_APP_CLIENT_ID: Iv23liMGIykpOssjwg6a
+```
+
+`GITOPS_APP_PRIVATE_KEY`（秘密鍵）は GitHub API の暗号化処理が必要なため自動設定が困難であり、払い出し後に手動設定する運用とした。これは Organization-level secrets が使えないパーソナルアカウントの制約（Variable は平文 API で設定可能、Secret は libsodium 暗号化が必要）に起因する。
+
+---
+
+## 14. teardown ワークフローのバグ修正
+
+### 背景
+
+teardown テンプレートを E2E テストしたところ、複数のバグが判明した。
+
+### 問題と原因・対処
+
+**① 変数名誤り**
+
+```yaml
+# 誤り
+client-id: ${{ vars.BACKSTAGE_APP_CLIENT_ID }}
+private-key: ${{ secrets.BACKSTAGE_APP_PRIVATE_KEY }}
+
+# 正しい（platform-gitops に登録されている名前）
+client-id: ${{ vars.GITOPS_APP_CLIENT_ID }}
+private-key: ${{ secrets.GITOPS_APP_PRIVATE_KEY }}
+```
+
+**② rm パスが実際のディレクトリ構造と不一致**
+
+```bash
+# 誤り（apps/<appName>-backend は存在しない）
+rm -rf apps/$appName-backend
+rm -rf apps/$appName-frontend
+
+# 正しい（論理アプリ単位のディレクトリごと削除）
+rm -rf apps/$appName
+```
+
+**③ GHCR パッケージ削除エンドポイント誤り**
+
+```bash
+# 誤り（Organization 向けエンドポイント）
+/orgs/okccl/packages/container/...
+
+# 正しい（パーソナルアカウント向け）
+/user/packages/container/...
+```
+
+**④ リポジトリ削除が GitHub App token では実行不可**
+
+```
+HTTP 403: Resource not accessible by integration
+```
+
+`DELETE /repos/{owner}/{repo}` は `delete_repo` という専用 OAuth スコープが必要であり、GitHub App の `Administration: R/W` permission とは独立している。**アカウント種別（個人・Organization）に関わらず** GitHub App installation token ではこのスコープを取得できない。
+
+PAT であれば `delete_repo` スコープを付与可能だが、teardown ワークフロー内の自動処理として不特定リポジトリを削除できる PAT を CI に持たせることはセキュリティリスクが高い。
+
+削除ステップを手動対応に変更し、ワークフローのログに削除コマンドを出力する実装とした。
+
+```bash
+# teardown ワークフロー完了後に手動実行
+gh repo delete okccl/<app-name>-backend --yes
+gh repo delete okccl/<app-name>-frontend --yes
+```
+
+---
+
+## 15. GITOPS_TOKEN 未使用 secret の削除
+
+`platform-gitops` に `GITOPS_TOKEN` secret が登録されていたが、どのワークフローからも参照されていなかった。README.md の Phase 6「設計上の決定事項」に PAT を使う旨の記述が残っており、経緯を確認した。
+
+Phase 6 時点ではクロスリポジトリ dispatch に PAT（`GITOPS_TOKEN`）を使用していたが、後から `okccl-gitops` GitHub App に移行した際にワークフローは更新されたものの secret と README が残ったままになっていた。PAT 自体はすでに削除済みであったため、secret エントリを platform-gitops から削除し、README.md の記述を GitHub App 移行済みの内容に更新した。
+
+---
+
+## 変更ファイル一覧（追記分）
+
+| ファイル | 変更内容 |
+|---|---|
+| `platform-gitops/backstage/templates/fullstack/template.yaml` | publish-backend / publish-frontend に `repoVariables.GITOPS_APP_CLIENT_ID` 追加 |
+| `platform-gitops/.github/workflows/teardown.yaml` | 変数名修正・rm パス修正・GHCR エンドポイント修正・リポジトリ削除を手動対応に変更 |
+| `platform-gitops/README.md` | Phase 6 の GITOPS_TOKEN 記述を GitHub App 移行済みに更新 |
