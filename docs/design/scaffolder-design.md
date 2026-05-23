@@ -120,8 +120,8 @@ owner: <グループ名>    # Keycloak グループ名（ArgoCD RBAC に使用�
 ワークフローの処理内容:
 1. apps-gitops をチェックアウトして `apps/<app-name>/` を削除し、main に直接 push
 2. ArgoCD の prune により Namespace 配下のリソースを削除
-3. GitHub リポジトリ（backend / frontend）を削除
-4. GHCR パッケージを削除（未作成の場合はスキップ）
+3. GHCR パッケージを削除（未作成の場合はスキップ）
+4. **GitHub リポジトリ削除は手動**（後述）
 
 Scaffolder 側で `appName` と `confirmName` の 2 回入力を要求する設計にしており、入力の一致チェックをワークフロー側で行う。削除は完全に不可逆のため、このミス防止ステップは除かない方針とした。
 
@@ -175,9 +175,13 @@ Backstage の GitHub 連携は用途ごとに異なる認証方式を使用す�
 
 > **将来的な移行:** `okccl` を GitHub Organization に変換した場合は GitHub App に戻すことができる。
 
-### 5.3 個人アカウントの制約と将来方針
+### 5.3 GitHub 認証の制約と将来方針
 
-本プロジェクトでは諸事情により個人アカウント（`okccl`）を使用する必要があり、以下の 2 点で制約が生じている。
+本プロジェクトで発生している GitHub 認証まわりの制約を整理する。制約の性質によって将来の解消見込みが異なる。
+
+#### Organization 移行で解消される制約
+
+本プロジェクトでは諸事情により個人アカウント（`okccl`）を使用する必要があり、以下の制約が生じている。
 
 | 制約 | 影響 | 現在の対処 |
 |---|---|---|
@@ -186,4 +190,19 @@ Backstage の GitHub 連携は用途ごとに異なる認証方式を使用す�
 
 `publish:github` アクションは `repoVariables` パラメータをサポートしており、リポジトリ作成と同時に GitHub Actions Variables を設定できる。これを利用して `GITOPS_APP_CLIENT_ID`（非機密の App Client ID）は Scaffolder が自動設定する。一方 `GITOPS_APP_PRIVATE_KEY`（秘密鍵）は暗号化処理が必要なため自動設定が困難であり、払い出し後に手動設定する運用とした。
 
-**将来方針:** `okccl` を GitHub Organization に移行することで両方の制約が解消される。Organization では `POST /orgs/{org}/repos` が使用可能なため GitHub App に戻せる。また Organization-level secrets により Scaffolder で払い出した新規リポジトリに secrets が自動継承される。
+**将来方針:** `okccl` を GitHub Organization に移行することで両制約が解消される。Organization では `POST /orgs/{org}/repos` が使用可能なため GitHub App に戻せる。また Organization-level secrets により新規リポジトリへの secrets 自動継承が可能になる。
+
+#### Organization 移行では解消されない制約
+
+| 制約 | 影響 | 現在の対処 |
+|---|---|---|
+| GitHub App installation token で `delete_repo` スコープを取得できない | teardown ワークフローからリポジトリを自動削除できない | ワークフロー完了後に手動削除 |
+
+`DELETE /repos/{owner}/{repo}` は GitHub API の仕様として `delete_repo` スコープを要求する。このスコープは GitHub App の permission model（`Administration: R/W` 等）とは独立した OAuth スコープであり、**アカウント種別（個人・Organization）に関わらず** GitHub App installation token では取得できない。PAT であれば `delete_repo` スコープを付与できるが、teardown はワークフロー内の自動処理であるため不特定のリポジトリを削除できる PAT を CI に持たせることはセキュリティ上リスクが高い。
+
+teardown ワークフローはリポジトリ削除の代わりに削除コマンドをログに出力するため、実行者が手動で削除する運用とした。
+
+```bash
+gh repo delete okccl/<app-name>-backend --yes
+gh repo delete okccl/<app-name>-frontend --yes
+```
