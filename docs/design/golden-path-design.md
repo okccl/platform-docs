@@ -179,16 +179,102 @@ platform chart（common-db）に組み込み、`withDb: true` にするだけで
 
 ## 5. 開発者が受け取るもの（ゴール状態）
 
-（作成中）
+### 5.1 払い出し完了時点で揃うもの
+
+Scaffolder の実行完了後、開発者は以下を受け取る。
+
+| 項目 | 内容 |
+|---|---|
+| backend リポジトリ | FastAPI スターターコード・Dockerfile・CI ワークフロー・aqua.yaml |
+| frontend リポジトリ | React + Vite スターターコード・Dockerfile・CI ワークフロー・aqua.yaml |
+| クラスタ環境 | Namespace・AppProject・RBAC・HTTPRoute・minio-backup-secret |
+| Backstage カタログ | backend / frontend エンティティが登録済み |
+| CI/CD パイプライン | main push → イメージビルド → カナリアデプロイまで自動化済み |
+
+開発者が最初にやることは `git clone` → `aqua install` → コードを書いて `git push` のみである。
+
+### 5.2 開発者が管理する領域
+
+プラットフォームが管理する領域（Helm chart・Platform ApplicationSet・ClusterExternalSecret）は
+開発者が変更できない。開発者が変更できる領域は以下に限定される。
+
+| ファイル | 変更できる内容 |
+|---|---|
+| `values.yaml` | レプリカ数・リソース制限・イメージタグ・DB 設定など |
+| `manifests/httproute.yaml` | ルーティングルール |
+| `src/` 以下 | アプリケーションコード |
 
 ---
 
 ## 6. アプリのライフサイクル管理（teardown）
 
-（作成中）
+### 6.1 teardown の仕組み
+
+teardown テンプレートは `github:actions:dispatch` で platform-gitops の
+`teardown.yaml` ワークフローを起動する。ワークフローの処理内容は以下の通り。
+
+1. apps-gitops の `apps/<app-name>/` を削除して main に直接 push
+2. ArgoCD の prune により Namespace 配下のリソースを自動削除
+3. GHCR パッケージを削除（未作成の場合はスキップ）
+4. GitHub リポジトリの削除コマンドをログに出力（実行は手動）
+
+### 6.2 設計上の判断
+
+**削除処理の実体をワークフローに委譲する理由**
+
+Scaffolder アクションで直接ファイル削除・リポジトリ削除を行う設計も可能だが、
+削除処理の権限（apps-gitops への push・GHCR パッケージ削除）を Backstage プロセスに
+持たせることになり、権限の集中が過剰になる。
+ワークフローに委譲することで、削除操作の実行者を platform-gitops ワークフローに限定できる。
+
+**GitHub リポジトリ削除を手動にする理由**
+
+`DELETE /repos/{owner}/{repo}` は `delete_repo` OAuth スコープを必要とし、
+GitHub App installation token では取得できない。
+CI に `delete_repo` スコープを持つ PAT を持たせると任意のリポジトリを削除できる権限を
+CI に与えることになりセキュリティリスクが高い。詳細は `scaffolder-design.md` 5.3 を参照。
+
+**appName の 2 回入力を要求する理由**
+
+teardown は完全に不可逆の操作であるため、Scaffolder 側で `appName` と `confirmName` の
+2 回入力を要求し、入力の一致チェックをワークフロー側で行う。ミス防止ステップは除かない方針とした。
 
 ---
 
 ## 7. 設計上の判断
 
-（作成中）
+### 7.1 App-of-Apps と ApplicationSet の併用
+
+apps-gitops の変化を検知する仕組みとして、App-of-Apps（apps-root）と
+ApplicationSet（user-apps-infra）の 2 つを使い分けている。
+
+| 仕組み | 検知対象 | 生成するもの |
+|---|---|---|
+| ApplicationSet（user-apps-infra） | `apps/**/app.yaml` | AppProject・Namespace・RoleBinding（Platform 側リソース） |
+| App-of-Apps（apps-root） | `apps/**/application.yaml` | ArgoCD Application（アプリデプロイ） |
+
+**設計上の判断**
+
+1 つの仕組みで AppProject・Namespace・ArgoCD Application をすべて生成することも可能だが、
+Platform 側リソース（インフラ）とアプリデプロイを同じ層で管理すると責務が混在する。
+
+ApplicationSet は `app.yaml` というシンプルな宣言ファイルを検知することで、
+「このアプリが存在する」という意図のみを Platform に伝える設計とした。
+ArgoCD Application の定義（`application.yaml`）はアプリチームが管理する領域として分離し、
+apps-root（App-of-Apps）が検知する。
+
+### 7.2 アプリごとに AppProject を生成する理由
+
+全アプリを ArgoCD の `default` プロジェクトに置く設計は運用が簡単だが、アプリ間の RBAC 分離ができない。
+Platform チームとアプリ開発者を権限で物理的に区別する設計方針に従い、
+アプリごとに AppProject を生成し、アプリ開発者が操作できる範囲を自分の Namespace に限定する。
+
+### 7.3 Helm Library Chart による抽象化
+
+アプリチームが Kubernetes マニフェストを直接書く設計も選択肢にあったが、採用しなかった。
+開発者が Deployment・Service・HPA・PodDisruptionBudget 等を個別に管理すると、
+設定ミスや Kyverno ポリシー違反が発生しやすく、Golden Path の目的（インフラを意識しない）と矛盾する。
+
+`common-app` / `common-db` Library Chart に標準構成を封じ込め、
+開発者が触れる設定を `values.yaml` の数項目に絞ることで、この問題を解消している。
+chart の詳細は `scaffolder-design.md` 3.1 を参照。
