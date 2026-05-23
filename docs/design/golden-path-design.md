@@ -99,23 +99,81 @@ apps-gitops への直接 push 権限をアプリリポジトリに持たせな�
 
 ## 3. Scaffolder の責務（何を生成するか）
 
-（作成中）
+### 3.1 生成物の全体像
+
+Scaffolder が生成するのはファイルのみであり、クラスタへの操作は行わない。
+生成物は 3 種類のリポジトリに分かれる。
+
+| リポジトリ | 生成物 | 役割 |
+|---|---|---|
+| `<app>-backend` | スターターコード・Dockerfile・CI ワークフロー・aqua.yaml・catalog-info.yaml | アプリ開発の出発点 |
+| `<app>-frontend` | 同上（React + Vite） | 同上 |
+| `apps-gitops` | app.yaml・application.yaml・values.yaml・httproute.yaml | Platform への環境払い出し宣言 |
+
+各ファイルの詳細は `scaffolder-design.md` 3 章を参照。
+
+### 3.2 設計上の判断
+
+**withDb フラグで DB 不要なアプリに余計なリソースを作らない**
+
+DB が必要かどうかはアプリによって異なる。
+`withDb` フラグを false にすると CNPG Cluster・PodMonitor・MinIO バックアップ設定が生成されない。
+「フルスタックテンプレートだが DB はオプション」という設計は、
+将来的にテンプレートを frontend-only などに細分化せずに済む利点もある。
+
+**catalog-info.yaml をスケルトンに含める理由**
+
+Backstage でアプリ一覧を管理できるようにするため、各リポジトリに `catalog-info.yaml` を配置する。
+Scaffolder の `catalog:register` ステップがこのファイルを Backstage カタログに登録し、
+払い出し完了後すぐにアプリが Backstage 上に表示される。
 
 ---
 
 ## 4. Platform の自動応答
 
-### 4.1 AppProject・RBAC の自動生成（Platform ApplicationSet）
+### 4.1 AppProject・RBAC の自動生成（user-apps-infra ApplicationSet）
 
-（作成中）
+apps-gitops の `apps/**/app.yaml` を ApplicationSet が検知し、
+以下のリソースを自動生成する。
+
+| リソース | 生成内容 |
+|---|---|
+| AppProject | `spec.sourceRepos` にアプリ用リポジトリ・`spec.destinations` にアプリ Namespace を設定 |
+| Namespace | `app-type: user-app` ラベルを付与（ClusterExternalSecret のターゲット条件として使用） |
+| RoleBinding | app-developer グループに Namespace スコープの権限を付与 |
 
 ### 4.2 Secret の自動配布（ClusterExternalSecret）
 
-（作成中）
+`app-type: user-app` ラベルを持つ Namespace が作成されると、
+ClusterExternalSecret が `minio-backup-secret` を自動配布する。
+
+開発者は Secret の存在を意識する必要がなく、DB バックアップが初期状態から有効になる。
+
+**設計上の判断**
+
+全アプリに共通して配布する Secret（MinIO 認証情報）を各アプリ App に分散させると、
+Secret の更新時に全アプリの変更が必要になる。ClusterExternalSecret の一元管理により、
+プラットフォーム側の更新のみで全アプリに反映される。
+
+個別アプリの ExternalSecret を apps-gitops に持たせる設計も検討したが採用しなかった。
+追加の理由として、ClusterSecretStore（wave 11）が起動する前にアプリ App（wave 13 以降）が
+ExternalSecret を作ろうとすると fresh bootstrap 時に失敗するという起動順の問題もある。
 
 ### 4.3 バックアップ・監視のデフォルト適用（common-db chart）
 
-（作成中）
+`withDb: true` の場合、common-db chart が以下を自動生成する。
+
+| リソース | 内容 |
+|---|---|
+| CNPG Cluster | PostgreSQL 17 HA（3ノード）・MinIO バックアップ・WAL アーカイブ設定 |
+| PodMonitor | Prometheus によるメトリクス収集 |
+| PrometheusRule | WAL アーカイブ失敗・バックアップ失敗アラート |
+
+**設計上の判断**
+
+バックアップ・監視設定を開発者が明示的に有効化する設計にすると、
+設定忘れによる「気づいたら監視されていなかった」が発生する。
+platform chart（common-db）に組み込み、`withDb: true` にするだけで全て有効になる設計とした。
 
 ---
 
