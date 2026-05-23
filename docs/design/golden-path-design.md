@@ -208,17 +208,9 @@ Scaffolder の実行完了後、開発者は以下を受け取る。
 
 ## 6. アプリのライフサイクル管理（teardown）
 
-### 6.1 teardown の仕組み
+teardown テンプレートの構成と処理内容は `scaffolder-design.md` 3.2 を参照。
 
-teardown テンプレートは `github:actions:dispatch` で platform-gitops の
-`teardown.yaml` ワークフローを起動する。ワークフローの処理内容は以下の通り。
-
-1. apps-gitops の `apps/<app-name>/` を削除して main に直接 push
-2. ArgoCD の prune により Namespace 配下のリソースを自動削除
-3. GHCR パッケージを削除（未作成の場合はスキップ）
-4. GitHub リポジトリの削除コマンドをログに出力（実行は手動）
-
-### 6.2 設計上の判断
+### 6.1 設計上の判断
 
 **削除処理の実体をワークフローに委譲する理由**
 
