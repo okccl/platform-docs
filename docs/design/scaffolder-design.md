@@ -74,17 +74,75 @@ owner: <グループ名>    # Keycloak グループ名（ArgoCD RBAC に使用�
 
 ### 3.1 fullstack テンプレート（生成物一覧・各ファイルの役割）
 
-（作成中）
+7ステップで構成される。
+
+| ステップ | アクション | 処理 |
+|---|---|---|
+| fetch-backend | `fetch:template` | backend-skeleton をレンダリングして `./backend/` に展開 |
+| publish-backend | `publish:github` | `okccl/<app-name>-backend` リポジトリを作成してプッシュ |
+| fetch-frontend | `fetch:template` | frontend-skeleton をレンダリングして `./frontend/` に展開 |
+| publish-frontend | `publish:github` | `okccl/<app-name>-frontend` リポジトリを作成してプッシュ |
+| fetch-gitops | `fetch:template` | gitops-skeleton をレンダリングして `./gitops/` に展開 |
+| publish-gitops | `publish:github:pull-request` | apps-gitops に `app/<app-name>` ブランチで PR を作成 |
+| register-backend / register-frontend | `catalog:register` | Backstage カタログにエンティティを登録 |
+
+**backend / frontend リポジトリの生成物**
+
+| ファイル | 役割 |
+|---|---|
+| `src/` | スターターコード（FastAPI / React + Vite） |
+| `Dockerfile` | コンテナイメージビルド設定 |
+| `.github/workflows/build.yaml` | CI: `main` push → GHCR push → platform-gitops へ `repository_dispatch` |
+| `catalog-info.yaml` | Backstage カタログ登録情報 |
+| `aqua.yaml` | 開発ツールバージョン固定（詳細は 4 章参照） |
+
+**apps-gitops の生成物**
+
+| ファイル | 役割 |
+|---|---|
+| `apps/<app-name>/app.yaml` | 論理アプリ宣言（ApplicationSet が検知） |
+| `<app-name>-backend/application.yaml` | ArgoCD Application（backend） |
+| `<app-name>-backend/values.yaml` | Helm values（common-app chart） |
+| `<app-name>-backend/manifests/httproute.yaml` | Gateway API ルーティング |
+| `<app-name>-frontend/` | frontend 側の同構成 |
+
+**設計上の判断**
+
+- **ArgoCD Application は multi-source 構成**: `platform-charts`（Helm chart）+ `apps-gitops`（values.yaml・manifests）の 3 ソースを組み合わせる。chart はプラットフォーム管理で読み取り専用、values と manifests はアプリチームが変更できる領域として分離している。
+- **`withDb` フラグ**: DB が不要なアプリに余計なリソースを作らないよう、オプションとして切り出した。`values.yaml` の `db.enabled` に反映され、common-app chart が CNPG Cluster の生成有無を制御する。
+- **Argo Rollouts をデフォルト有効**: カナリアデプロイ（20% → pause → 100%）を初期設定として組み込むことで、アプリチームが意識せずに安全なデプロイ戦略を得られる。
+- **`catalog:register` は `optional: true`**: カタログ登録の失敗が Scaffolder 全体をロールバックしないようにするため。登録は後から手動でも可能。
 
 ### 3.2 teardown テンプレート
 
-（作成中）
+`github:actions:dispatch` アクション 1 つで構成される。Backstage 側ではワークフローの起動のみを担い、削除処理の実体は `okccl/platform-gitops` の `teardown.yaml` ワークフローが担う。
+
+ワークフローの処理内容:
+1. apps-gitops をチェックアウトして `apps/<app-name>/` を削除し、main に直接 push
+2. ArgoCD の prune により Namespace 配下のリソースを削除
+3. GitHub リポジトリ（backend / frontend）を削除
+4. GHCR パッケージを削除（未作成の場合はスキップ）
+
+Scaffolder 側で `appName` と `confirmName` の 2 回入力を要求する設計にしており、入力の一致チェックをワークフロー側で行う。削除は完全に不可逆のため、このミス防止ステップは除かない方針とした。
 
 ---
 
 ## 4. 開発環境セットアップの組み込み（aqua.yaml）
 
-（作成中）
+fullstack テンプレートの `fetch:template` ステップが、backend-skeleton / frontend-skeleton に含まれる `aqua.yaml` をそのままコピーして生成する。クローン直後に `aqua install` 1 コマンドで開発ツールが揃う状態を初期値として提供する。
+
+```yaml
+# 例（実際のファイルは backend-skeleton/aqua.yaml を参照）
+packages:
+  - name: kubernetes/kubectl@v1.35.3
+  - name: helm/helm@v3.20.1
+  - name: argoproj/argo-cd@v3.2.9
+  # ...
+```
+
+**現在の制約**: スケルトンの `aqua.yaml` に記載するバージョンは `platform-infra/aqua.yaml`（PE チームの source of truth）と手動で同期する必要がある。自動同期の仕組みは未実装であり、バージョンアップ時は両ファイルを合わせて更新すること。
+
+ツール管理の設計方針（PE チームとアプリチームのモデルの違い）は `dev-env-design.md` 2 章を参照。
 
 ---
 
@@ -116,3 +174,16 @@ Backstage の GitHub 連携は用途ごとに異なる認証方式を使用す�
 | `Actions: Read & Write` | teardown テンプレートの workflow dispatch（`github:actions:dispatch`） |
 
 > **将来的な移行:** `okccl` を GitHub Organization に変換した場合は GitHub App に戻すことができる。
+
+### 5.3 個人アカウントの制約と将来方針
+
+本プロジェクトでは諸事情により個人アカウント（`okccl`）を使用する必要があり、以下の 2 点で制約が生じている。
+
+| 制約 | 影響 | 現在の対処 |
+|---|---|---|
+| GitHub App installation token が `POST /user/repos` を呼べない | Scaffolder でのリポジトリ作成が失敗する | Fine-grained PAT に切り替え（5.2 参照） |
+| Organization-level secrets が使えない | Scaffolder が新規作成したリポジトリに CI 用の credentials を自動配布できない | Variable は `publish:github` の `repoVariables` で自動設定。Secret（`GITOPS_APP_PRIVATE_KEY`）は初回のみ手動設定 |
+
+`publish:github` アクションは `repoVariables` パラメータをサポートしており、リポジトリ作成と同時に GitHub Actions Variables を設定できる。これを利用して `GITOPS_APP_CLIENT_ID`（非機密の App Client ID）は Scaffolder が自動設定する。一方 `GITOPS_APP_PRIVATE_KEY`（秘密鍵）は暗号化処理が必要なため自動設定が困難であり、払い出し後に手動設定する運用とした。
+
+**将来方針:** `okccl` を GitHub Organization に移行することで両方の制約が解消される。Organization では `POST /orgs/{org}/repos` が使用可能なため GitHub App に戻せる。また Organization-level secrets により Scaffolder で払い出した新規リポジトリに secrets が自動継承される。
