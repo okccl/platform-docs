@@ -17,6 +17,9 @@
 | 13 | fullstack テンプレート: 新規リポジトリへの GITOPS_APP_CLIENT_ID 自動設定 |
 | 14 | teardown ワークフローのバグ修正（変数名誤り・rm パス誤り・GHCR エンドポイント誤り・リポジトリ削除を手動対応に変更） |
 | 15 | GITOPS_TOKEN 未使用 secret の削除 |
+| 16 | ghcr-pull-secret SecretSyncedError 修正（PAT 切り替え時に GITHUB_APP_PRIVATE_KEY が削除されたことが原因） |
+| 17 | sample-backend の minio-backup-secret ExternalSecret 削除（ClusterExternalSecret との二重管理解消） |
+| 18 | sample-backend OutOfSync 根本原因修正（SSA + ignoreDifferences jsonPointer 配列インデックス問題） |
 
 ---
 
@@ -479,3 +482,88 @@ Phase 6 時点ではクロスリポジトリ dispatch に PAT（`GITOPS_TOKEN`�
 | `platform-gitops/backstage/templates/fullstack/template.yaml` | publish-backend / publish-frontend に `repoVariables.GITOPS_APP_CLIENT_ID` 追加 |
 | `platform-gitops/.github/workflows/teardown.yaml` | 変数名修正・rm パス修正・GHCR エンドポイント修正・リポジトリ削除を手動対応に変更 |
 | `platform-gitops/README.md` | Phase 6 の GITOPS_TOKEN 記述を GitHub App 移行済みに更新 |
+
+---
+
+## 16. ghcr-pull-secret SecretSyncedError 修正
+
+### 問題
+
+`ghcr-pull-secret` ExternalSecret が SecretSyncedError になり、5 時間以上 Backstage の GHCR imagePullSecret が更新されていなかった。`external-secrets-config` → `root` と Degraded が連鎖していた。
+
+### 原因
+
+セッション内の作業（11: PAT 切り替え）で `backstage-secret.yaml` から `GITHUB_APP_PRIVATE_KEY` エントリを削除したことが原因。Backstage 本体は PAT に切り替わったため不要になったが、`ghcr-token` GithubAccessToken Generator が `backstage-secret.GITHUB_APP_PRIVATE_KEY` を参照し続けていた。`GITHUB_APP_PRIVATE_KEY` が Secret に存在しないため空値を RSA 鍵としてパースしようとして失敗していた。
+
+```
+error parsing RSA private key: invalid key: Key must be a PEM encoded PKCS1 or PKCS8 key
+```
+
+### 対処
+
+`backstage-secret.yaml` に `GITHUB_APP_PRIVATE_KEY` → `privateKey`（from `backstage-github-app-source`）のマッピングを復元。
+
+ただし、SSA の spec.data 配列への追加が機能しない問題（11 番と同様の既知問題）が再発した。`Replace=true` アノテーションを追加しても解消せず、ユーザーがクラスタ上の ExternalSecret を手動削除・再作成することで解消した。
+
+---
+
+## 17. sample-backend minio-backup-secret ExternalSecret 二重管理解消
+
+### 問題
+
+`sample-app` namespace に `minio-backup-secret` を target とする ExternalSecret が 2 つ存在し、`user-app-minio-backup-secret` が `target is owned by another ExternalSecret` エラーになっていた。
+
+### 原因
+
+`ClusterExternalSecret`（9 番で追加）による自動配布より前に、apps-gitops の `sample-backend/manifests/minio-backup-secret.yaml` として個別の ExternalSecret が作成されていた。ClusterExternalSecret 導入後は二重管理になっていた。gitops-skeleton（新アプリ用）は manifests に minio-backup-secret.yaml を含まない設計であり、sample アプリだけ旧方式のものが残っていた。
+
+### 対処
+
+`apps-gitops/apps/sample/sample-backend/manifests/minio-backup-secret.yaml` を削除した。ArgoCD の prune により cluster 側の ExternalSecret も削除され、ClusterExternalSecret 側が正常に所有できるようになった。
+
+---
+
+## 18. sample-backend OutOfSync 根本原因修正
+
+### 問題
+
+`sample-backend` が長期間 OutOfSync のまま（image `46e8147` → `ea4b65b` に更新されない）。`argocd app diff` は差分を検出するが、`argocd app sync` を実行しても image は変わらず ResourceVersion も変化しない。
+
+### 原因
+
+`application.yaml` の `ignoreDifferences` に以下の jsonPointer が設定されていた。
+
+```yaml
+- group: argoproj.io
+  kind: Rollout
+  jsonPointers:
+    - /spec/template/spec/containers/0/ports/0/protocol
+```
+
+`RespectIgnoreDifferences=true` + `ServerSideApply=true` の組み合わせでは、ArgoCD は SSA パッチ送信前に ignoreDifferences で指定したフィールドをマニフェストから除去する。`/spec/template/spec/containers/0/ports/0/protocol` のように**配列インデックス（`0`）を含む jsonPointer** を除去する際に containers 配列全体が SSA パッチから落ちてしまい、`image` フィールドが含まれないパッチが送信されていた。API server は「変更なし」として 200 を返すため sync ログには error が出ず、`serverside-applied` として記録されるが実際には何も変わらない。
+
+`protocol: TCP` の差分は Kubernetes が `containerPort` のデフォルト値として自動付与するためであり、chart 側で明示していなかったことで発生していた。
+
+### 対処
+
+1. `common-app` chart の `_helpers.tpl` に `protocol: TCP` を明示追加（version 0.3.0 → 0.3.1）
+2. `helm dependency update` で `sample-backend` / `sample-frontend` の依存 tgz を更新
+3. `application.yaml` の `ignoreDifferences` から `protocol` jsonPointer を削除
+
+chart 修正後に protocol の差分が消え、SSA パッチに containers 配列が正しく含まれるようになり、image が `ea4b65b` に更新・Argo Rollouts カナリアが完走して Synced になった。
+
+---
+
+## 変更ファイル一覧（追記分 2）
+
+| ファイル | 変更内容 |
+|---|---|
+| `platform-gitops/platform/secrets/config/backstage-secret.yaml` | GITHUB_APP_PRIVATE_KEY → privateKey マッピング復元 |
+| `apps-gitops/apps/sample/sample-backend/manifests/minio-backup-secret.yaml` | 削除（ClusterExternalSecret に統一） |
+| `apps-gitops/apps/sample/sample-backend/application.yaml` | ignoreDifferences から protocol jsonPointer を削除 |
+| `platform-charts/charts/common-app/Chart.yaml` | version 0.3.0 → 0.3.1 |
+| `platform-charts/charts/common-app/templates/_helpers.tpl` | containerPort に `protocol: TCP` を追加（2 箇所） |
+| `platform-charts/charts/sample-backend/Chart.yaml` | common-app 依存を 0.3.1 に更新 |
+| `platform-charts/charts/sample-backend/charts/common-app-*.tgz` | 0.3.0 削除・0.3.1 追加 |
+| `platform-charts/charts/sample-frontend/Chart.yaml` | common-app 依存を 0.3.1 に更新 |
+| `platform-charts/charts/sample-frontend/charts/common-app-*.tgz` | 0.3.0 削除・0.3.1 追加 |
