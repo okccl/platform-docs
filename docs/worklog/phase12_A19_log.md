@@ -9,6 +9,10 @@
 | 5 | org policy 除外・SA キー作成・SOPS 暗号化 |
 | 6 | `backup-to-gcs.sh` 実装・`make backup-to-gcs` 追加 |
 | 7 | cron 登録（毎日 23:00） |
+| 8 | Makefile 整理（root/k3d 分離の意図明示・ターゲット再配置） |
+| 9 | スクリプト配置修正（`k3d/scripts/` → `scripts/`） |
+| 10 | `logs/` ディレクトリ・`.gitignore` 追加・cron パス更新 |
+| 11 | mise 削除 |
 
 ---
 
@@ -219,9 +223,78 @@ cron サービスは `enabled`（WSL 再起動後も自動起動）であるこ�
 
 ---
 
+---
+
+## 8. Makefile 整理
+
+root `Makefile` と `k3d/Makefile` の分離理由がどこにも記述されていなかったため、各ファイル冒頭にコメントを追加した。分離の意図は「`make bootstrap` がクラスターを作り直す破壊的操作のため、誤実行防止として k3d/ 配下に分離している」こと。
+
+あわせてターゲット配置の不整合を修正した。
+
+- `generate-dr-manifests`：root Makefile に既存のターゲットがあるにもかかわらず k3d/Makefile にも重複追加していた → k3d/Makefile から削除
+- `backup-to-gcs`：MinIO は k3d 外の WSL レベルの操作のため k3d/Makefile → root Makefile に移動
+
+---
+
+## 9. スクリプト配置修正
+
+`backup-to-gcs.sh` と `generate-dr-manifests.py` が `k3d/scripts/` に置かれていたが、いずれも WSL レベルの操作であり `platform-infra/scripts/` が適切。両スクリプトを移動し `k3d/scripts/` ディレクトリを削除した。
+
+`generate-dr-manifests.py` は `SCRIPT_DIR` 相対で出力先を計算していたため、移動後も出力先が `k3d/dr/` を維持するよう `OUTPUT_DIR` を修正した。
+
+```python
+# 変更前（k3d/scripts/ 起点）
+OUTPUT_DIR = os.path.join(SCRIPT_DIR, "..", "dr")      # → k3d/dr/
+
+# 変更後（scripts/ 起点）
+OUTPUT_DIR = os.path.join(SCRIPT_DIR, "..", "k3d", "dr")  # → k3d/dr/（変わらず）
+```
+
+root Makefile の参照パスも `k3d/scripts/` → `scripts/` に更新した。
+
+---
+
+## 10. `logs/` ディレクトリ・`.gitignore` 追加・cron パス更新
+
+8・9 の変更に伴い、cron のコマンドとログパスを更新した（ユーザーが実施）。
+
+```bash
+# 変更前
+0 23 * * * cd /home/ccl/platform-infra/k3d && make backup-to-gcs >> /home/ccl/platform-infra/k3d/logs/backup-to-gcs.log 2>&1
+
+# 変更後
+0 23 * * * cd /home/ccl/platform-infra && make backup-to-gcs >> /home/ccl/platform-infra/logs/backup-to-gcs.log 2>&1
+```
+
+新しいログ先 `logs/` ディレクトリが存在しなかったため `.gitkeep` とともに作成した。また `.gitignore` を新規作成し以下を追加した。`k3d/dr/*.yaml` は設計書に「gitignore 済み」と記載されていたが実体が存在していなかったためあわせて対応した。
+
+```
+logs/*.log
+k3d/dr/*.yaml
+```
+
+---
+
+## 11. mise 削除
+
+aqua 移行済みにもかかわらず mise のバイナリとデータが残存していた。shell config への記述・PATH への登録はすでになかったため、ファイル削除のみで完了した。
+
+```bash
+rm ~/.local/bin/mise
+rm -rf ~/.local/share/mise/
+```
+
+---
+
 | ファイル | 変更内容 |
 |---|---|
 | `platform-infra/aqua.yaml` | gcloud CLI（twistedpair/google-cloud-sdk 562.0.0）・rclone（v1.74.2）を追加 |
 | `platform-infra/secrets/gcp-backup-sa-key.enc.json` | GCP SA キーを SOPS 暗号化して追加（新規） |
-| `platform-infra/k3d/scripts/backup-to-gcs.sh` | MinIO → GCS バックアップスクリプト（新規） |
-| `platform-infra/k3d/Makefile` | `backup-to-gcs` ターゲット追加 |
+| `platform-infra/k3d/scripts/backup-to-gcs.sh` | MinIO → GCS バックアップスクリプト（新規）※後にセクション 9 で `scripts/` に移動 |
+| `platform-infra/k3d/Makefile` | `backup-to-gcs` ターゲット追加 ※後にセクション 8 で root Makefile に移動 |
+| `platform-infra/Makefile` | Makefile 分離理由コメント追加・`backup-to-gcs` ターゲット追加・スクリプトパス修正 |
+| `platform-infra/k3d/Makefile`（再） | `backup-to-gcs` / `generate-dr-manifests` 削除・分離理由コメント追加 |
+| `platform-infra/scripts/backup-to-gcs.sh` | `k3d/scripts/` から移動 |
+| `platform-infra/scripts/generate-dr-manifests.py` | `k3d/scripts/` から移動・`OUTPUT_DIR` を `k3d/dr/` に明示 |
+| `platform-infra/.gitignore` | 新規作成：`logs/*.log`・`k3d/dr/*.yaml` |
+| `platform-infra/logs/.gitkeep` | `logs/` ディレクトリ追加 |
