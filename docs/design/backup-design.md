@@ -146,7 +146,7 @@ GCS にオフサイトコピーを持つことで、ローカル環境が完全�
 | rclone | MinIO → GCS の同期ツール | aqua で管理 |
 | GCS バケット | バックアップ保存先 | Always Free: 5GB / 月 |
 | GCP Service Account | GCS への書き込み認証 | バケット限定の最小権限 |
-| `backup-to-gcs.sh` | バックアップ実行スクリプト | `platform-infra/k3d/scripts/` |
+| `backup-to-gcs.sh` | バックアップ実行スクリプト | `platform-infra/scripts/` |
 | WSL crontab | 日次自動実行 | 毎日 23:00 |
 | `make backup-to-gcs` | 手動実行 Makefile ターゲット | |
 
