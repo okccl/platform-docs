@@ -200,6 +200,18 @@ platform-infra/secrets/gcp-backup-sa-key.enc.json  ← SOPS 暗号化 SA キー
 
 SA 権限は `roles/storage.objectAdmin`（対象バケット限定の最小権限）。
 
+**組織ポリシーと採用判断**
+
+`ccl-org` には `constraints/iam.disableServiceAccountKeyCreation` が設定されており、デフォルトでは SA キーの作成が禁止されている。これは「静的なキーファイルを持たせない」という企業セキュリティのベストプラクティスに基づく設定である。
+
+代替案として Application Default Credentials（ADC）を検討したが、以下の理由で採用しなかった。
+
+- WSL cron は GCE/GKE のようなクラウドネイティブな実行環境ではなく、メタデータサーバーからトークンを自動取得できない
+- ADC（`gcloud auth application-default login`）を使った場合も `~/.config/gcloud/application_default_credentials.json` にリフレッシュトークンが平文で保存されるため、「ファイルとしてローカルに置く」という点は SA キーと変わらない
+- ADC は Git 管理できないため bootstrap 再現性が失われる（毎回 `gcloud auth` が必要）
+
+結論として、WSL 上の cron ジョブという制約の中では SA キー + SOPS のほうが安全かつポータブルである。`ccl-platform-backup` プロジェクトのみ org policy の制約から除外し、SA キーの作成を許可する。
+
 MinIO の認証情報は platform-gitops で管理している SOPS 暗号化ファイル（`minio-backup-secret-source.yaml`）からスクリプト実行時に復号して取得する。MinIO コンテナには `MINIO_ROOT_PASSWORD_FILE` が設定されており `docker inspect` では正確な値が取れないためこの方式を採用した。
 
 ### 4.7 実行スケジュール
@@ -257,3 +269,4 @@ GCS から MinIO へデータを手動で戻したうえで同じ DR 手順を�
 | GCS Always Free 5GB 制限 | 現在のバックアップサイズ約 314MB。30 日累積でも 5GB 以内の見込みだが、DB が増加した場合は超過の可能性がある | 現時点では枠内。超過時は Lifecycle 期間の短縮や対象 DB の見直しで対応する |
 | MinIO コンテナ停止時のバックアップ失敗 | `minio-external` が停止すると WAL アーカイブと ScheduledBackup が失敗する | `CNPGWalArchivingFailing` アラートで検知可能。Discord 通知で即時対応できる |
 | WSL cron サービス停止 | WSL の cron サービスが停止すると GCS 同期が実行されない | Discord 通知の途絶で間接的に検知できる。cron サービスは WSL 起動時に自動起動するよう設定する |
+| org policy 除外によるキー作成許可 | `ccl-platform-backup` プロジェクトは `constraints/iam.disableServiceAccountKeyCreation` から除外している。キー漏洩リスクは org policy の本来の設計意図に反する | SOPS 暗号化で Git 管理し、一時ファイルは `trap EXIT` で確実に削除する。バケット限定の最小権限に抑えることで漏洩時の影響範囲を限定する |
