@@ -1,7 +1,5 @@
 # バックアップ設計書
 
-> **ステータス**: 作成中（4章クラウドバックアップ実装後に実装内容を反映予定）
-
 ---
 
 ## 1. 概要
@@ -148,7 +146,7 @@ GCS にオフサイトコピーを持つことで、ローカル環境が完全�
 | rclone | MinIO → GCS の同期ツール | aqua で管理 |
 | GCS バケット | バックアップ保存先 | Always Free: 5GB / 月 |
 | GCP Service Account | GCS への書き込み認証 | バケット限定の最小権限 |
-| `backup-to-gcs.sh` | バックアップ実行スクリプト | `platform-infra/scripts/` |
+| `backup-to-gcs.sh` | バックアップ実行スクリプト | `platform-infra/k3d/scripts/` |
 | WSL crontab | 日次自動実行 | 毎日 23:00 |
 | `make backup-to-gcs` | 手動実行 Makefile ターゲット | |
 
@@ -188,14 +186,15 @@ rclone はコマンドライン引数でバックエンドを指定できるた�
 
 GCP Service Account のキー（JSON）は SOPS × Age で暗号化して platform-infra の Git で管理する。
 
-スクリプト実行時に SOPS で復号して `/tmp` に一時展開し、rclone 終了後に `trap EXIT` で削除する。
+スクリプト実行時に SOPS で復号し、`mktemp -d` で作成した一時ディレクトリ（`$WORK_DIR`）に SA キーと rclone 設定ファイルを展開する。rclone 終了後に `trap EXIT` で `$WORK_DIR` ごと削除する。
 
 ```
 platform-infra/secrets/gcp-backup-sa-key.enc.json  ← SOPS 暗号化 SA キー
   ↓ スクリプト実行時に SOPS 復号
-  /tmp/gcp-backup-sa-key.json（一時ファイル）
-  ↓ rclone の --gcs-service-account-file に渡す
-  ↓ 終了後に trap EXIT で削除
+  $WORK_DIR/gcp-sa-key.json（mktemp -d による一時ディレクトリ内）
+  $WORK_DIR/rclone.conf（service_account_file に SA キーパスを埋め込んだ rclone 設定）
+  ↓ rclone copy --config $WORK_DIR/rclone.conf
+  ↓ 終了後に trap EXIT で $WORK_DIR ごと削除
 ```
 
 SA 権限は `roles/storage.objectAdmin`（対象バケット限定の最小権限）。
@@ -257,7 +256,7 @@ CNPG の Prometheus メトリクスをもとに PrometheusRule を定義し、Al
 
 ### 6.2 WSL 全損時（GCS からリストア）
 
-GCS から MinIO へデータを手動で戻したうえで同じ DR 手順を実施する。または recovery クラスターの `endpointURL` を GCS の S3 互換エンドポイントに変更して直接リストアすることも可能。どちらの手順も同一の recovery マニフェストを起点とする設計になっている。
+GCS から MinIO へデータを手動で戻したうえで同じ DR 手順を実施する。GCS への直接リストアは barman-cloud が GCS S3 互換 API に HMAC キー（SA キーとは別管理）を必要とするため採用しなかった。MinIO を中継することで認証の複雑さを避けつつ、クラスター全損時と同一の DR 手順を再利用できる（詳細は DR 設計書 3.4 節）。
 
 ---
 
