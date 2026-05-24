@@ -17,8 +17,7 @@
 ### 1. DR マニフェストを生成
 
 ```bash
-cd ~/platform-infra/k3d
-make generate-dr-manifests
+cd ~/platform-infra && make generate-dr-manifests
 # → k3d/dr/<cluster-name>-recovery.yaml が生成される
 ```
 
@@ -37,7 +36,7 @@ kubectl delete cluster ${CLUSTER_NAME} -n ${NAMESPACE}
 kubectl delete pvc -n ${NAMESPACE} -l cnpg.io/cluster=${CLUSTER_NAME}
 
 # recovery マニフェストを apply
-kubectl apply -f k3d/dr/${CLUSTER_NAME}-recovery.yaml
+kubectl apply -f ~/platform-infra/k3d/dr/${CLUSTER_NAME}-recovery.yaml
 ```
 
 ### 3. リストア完了を待機
@@ -77,7 +76,7 @@ make bootstrap
 ### 2. DR マニフェストを生成
 
 ```bash
-make generate-dr-manifests
+cd ~/platform-infra && make generate-dr-manifests
 ```
 
 ### 3. 各クラスターをリストア
@@ -93,7 +92,7 @@ kubectl delete cluster ${CLUSTER_NAME} -n ${NAMESPACE}
 kubectl delete pvc -n ${NAMESPACE} -l cnpg.io/cluster=${CLUSTER_NAME}
 
 # recovery マニフェストを apply
-kubectl apply -f k3d/dr/${CLUSTER_NAME}-recovery.yaml
+kubectl apply -f ~/platform-infra/k3d/dr/${CLUSTER_NAME}-recovery.yaml
 
 # リストア完了を待機
 kubectl get cluster ${CLUSTER_NAME} -n ${NAMESPACE} -w
