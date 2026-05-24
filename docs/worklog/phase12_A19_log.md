@@ -7,6 +7,8 @@
 | 3 | GCS バケット作成・Lifecycle 設定 |
 | 4 | Service Account 作成・バケット権限付与 |
 | 5 | org policy 除外・SA キー作成・SOPS 暗号化 |
+| 6 | `backup-to-gcs.sh` 実装・`make backup-to-gcs` 追加 |
+| 7 | cron 登録（毎日 23:00） |
 
 ---
 
@@ -174,7 +176,52 @@ rm /tmp/gcp-backup-sa-key.json
 
 ---
 
+---
+
+## 6. backup-to-gcs.sh 実装
+
+MinIO（`localhost:9000`）の `cnpg-backup` バケットを GCS（`ccl-platform-cnpg-backup`）へ差分同期するスクリプトを `platform-infra/k3d/scripts/backup-to-gcs.sh` として実装した。
+
+処理フローは以下の通り。
+
+1. SOPS から MinIO 認証情報・Discord Webhook URL・GCP SA キーを復号
+2. rclone の一時設定ファイルを生成（`mktemp -d` による一時ディレクトリ）
+3. `rclone copy` で差分同期
+4. `trap EXIT` で一時ディレクトリを確実に削除
+
+`BACKUP_STATUS` をデフォルト `"failed"` にしておき、全ステップ完了後に `"success"` に更新する。失敗時は `trap EXIT` 内で Discord Webhook に通知する設計にした（成功時は通知しない）。
+
+### トラブルシュート：GCS uniform bucket-level access エラー
+
+初回実行時に以下のエラーが発生した。
+
+```
+ERROR: Cannot insert legacy ACL for an object when uniform bucket-level access is enabled.
+```
+
+バケット作成時に `--uniform-bucket-level-access` を指定していたため、rclone がオブジェクトレベルの ACL を設定しようとして失敗していた。rclone の GCS 設定に `bucket_policy_only = true` を追加して解消した。
+
+### 設計書との差異修正：rclone sync → copy
+
+初期実装で `rclone sync` を使っていたが、設計書 4.3 節では `rclone copy` が明示されていた。`sync` では MinIO の `retentionPolicy: 7d` による削除が GCS にも伝播し、GCS での 30 日保持が機能しなくなる。`copy` に修正することで MinIO（7 日）と GCS（30 日）の保持期間を独立して管理できるようになった。
+
+---
+
+## 7. cron 登録（毎日 23:00）
+
+設計書 4.7 節の通り、毎日 23:00 に WSL cron で自動実行するよう登録した。ログは `platform-infra/k3d/logs/backup-to-gcs.log` に追記される。
+
+```bash
+echo '0 23 * * * cd /home/ccl/platform-infra/k3d && make backup-to-gcs >> /home/ccl/platform-infra/k3d/logs/backup-to-gcs.log 2>&1' | crontab -
+```
+
+cron サービスは `enabled`（WSL 再起動後も自動起動）であることを確認した。
+
+---
+
 | ファイル | 変更内容 |
 |---|---|
 | `platform-infra/aqua.yaml` | gcloud CLI（twistedpair/google-cloud-sdk 562.0.0）・rclone（v1.74.2）を追加 |
 | `platform-infra/secrets/gcp-backup-sa-key.enc.json` | GCP SA キーを SOPS 暗号化して追加（新規） |
+| `platform-infra/k3d/scripts/backup-to-gcs.sh` | MinIO → GCS バックアップスクリプト（新規） |
+| `platform-infra/k3d/Makefile` | `backup-to-gcs` ターゲット追加 |
