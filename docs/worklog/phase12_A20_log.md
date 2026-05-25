@@ -13,6 +13,8 @@
 | 7 | 手動ベースバックアップのトリガー（全 3 クラスター） |
 | 8 | ArgoCD auto-sync 回避策の設計検討（GitOps-first 方式を採用） |
 | 9 | GitOps-first DR 実装（common-db chart 拡張・generate-dr-manifests 全面改修・k3d/dr 廃止） |
+| 10 | シナリオ B 着手：bootstrap バグ発見①（backstage-secret GITHUB_APP_PRIVATE_KEY 参照先誤り） |
+| 11 | bootstrap バグ発見②：ghcr-pull-secret の PAT 移行漏れ（okccl-gitops に packages:read 追加で解消） |
 
 ---
 
@@ -326,6 +328,102 @@ gitops ファイル自体が DR マニフェストになったため `k3d/dr/` �
 
 ---
 
+## 10. シナリオ B 着手：bootstrap バグ発見①
+
+### 背景
+
+シナリオ B（クラスター全損リストア）の実測のため `k3d cluster delete dev` → `make bootstrap` を実行。フレッシュ bootstrap では Secret が一から作成されるため、これまで隠れていたバグが顕在化した。
+
+### 問題
+
+`external-secrets-config` の `backstage-secret` ExternalSecret が Degraded。
+
+```
+error processing spec.data[5] (key: backstage-github-app-source),
+err: property privateKey does not exist in data of secret "backstage-github-app-source"
+```
+
+### 原因
+
+commit `57ffb2d`（"backstage-secret に GITHUB_APP_PRIVATE_KEY を復元"）で `GITHUB_APP_PRIVATE_KEY` のエントリを追加した際、参照先を `backstage-github-app-source.privateKey` としていた。しかし `backstage-github-app-source` には `githubOauthClientId` / `githubOauthClientSecret` / `githubPat` の 3 フィールドしかなく、`privateKey` は存在しない。
+
+正しい参照先は `gitops-github-app`（`gitops-github-app-source.yaml` が展開する Secret）である。
+
+### 対処
+
+`backstage-secret.yaml` の参照先を修正した。
+
+```yaml
+# 修正前
+remoteRef:
+  key: backstage-github-app-source
+  property: privateKey
+
+# 修正後
+remoteRef:
+  key: gitops-github-app
+  property: privateKey
+```
+
+---
+
+## 11. bootstrap バグ発見②：ghcr-pull-secret の PAT 移行漏れ
+
+### 背景
+
+`backstage-secret` の修正後、次は `ghcr-pull-secret` ExternalSecret が Degraded になり bootstrap が停止した。
+
+### 問題の連鎖
+
+**第 1 エラー（App ID 誤り）**
+
+```
+error generating token: response code: 401,
+response: A JSON web token could not be decoded
+```
+
+`backstage-ghcr-token.yaml`（GithubAccessToken Generator）の `appID: "3623421"` は `okccl-backstage` App のものだった。`gitops-github-app` secret が持つ private key は `okccl-gitops`（ID: 3638469）のものであり、App ID と key の組み合わせが不一致だったため JWT が無効。
+
+GitHub API で正しい App ID / installID を確認し、Generator を更新した。
+
+```yaml
+# 修正
+appID: "3638469"    # okccl-gitops
+installID: "131473848"
+```
+
+**第 2 エラー（permissions 不足）**
+
+```
+error generating token: response code: 422,
+response: The permissions requested are not granted to this installation.
+```
+
+App ID は正しくなったが、`okccl-gitops` のインストールに `packages: read` 権限がなかった。
+
+### 根本原因：PAT 移行漏れ
+
+作業ログ A15 でフレッシュ bootstrap 時の ImagePullBackOff 対策として `okccl-backstage` App（packages: write）を使った `GithubAccessToken` Generator を実装した。その後の PAT 移行（commit `3731013`）で `backstage-github-app-source.yaml` から `privateKey` を削除した際、GHCR imagePullSecret への影響を見落とした。
+
+旧 bootstrap では `backstage-secret` が削除されず古い値を保持し続けたため、Generator の失敗は表面化しなかった。フレッシュ bootstrap で初めて顕在化した。
+
+### Fine-grained PAT による代替が不可能な理由
+
+PAT への完全移行を試みたが、**GitHub Fine-grained PAT は GitHub Packages（GHCR）に公式非対応**（GitHub 既知の制限）であることが判明。Classic PAT の `read:packages` または GitHub App が必要。
+
+### 対処
+
+`okccl-gitops` GitHub App に `packages: read` 権限を追加（GitHub App 設定 GUI で実施）し、インストールを承認。CI/CD 用途に加えて GHCR imagePullSecret 生成の役割も担う構成とした。
+
+GitHub API でトークン取得成功を確認した後、bootstrap を再実行した。
+
+### 今後の対応
+
+- GitHub App / PAT の役割分担を `github-auth-design.md` として文書化する（bootstrap 完了後）
+- `scaffolder-design.md` の権限記述は `github-auth-design.md` への参照に置き換える
+
+---
+
 ## 変更ファイル一覧
 
 | ファイル | 変更内容 |
@@ -334,3 +432,5 @@ gitops ファイル自体が DR マニフェストになったため `k3d/dr/` �
 | `platform-infra/k3d/dr/` | 廃止（README.md・.gitignore を削除） |
 | `platform-charts/charts/common-db/templates/_helpers.tpl` | `db.recovery.enabled: true` で recovery bootstrap・externalClusters を生成する分岐を追加 |
 | `platform-charts/charts/common-db/values.yaml` | `db.recovery` デフォルト値追加（`enabled: false`） |
+| `platform-gitops/platform/secrets/config/backstage-secret.yaml` | `GITHUB_APP_PRIVATE_KEY` の参照先を `backstage-github-app-source` → `gitops-github-app` に修正 |
+| `platform-gitops/platform/secrets/generators/backstage-ghcr-token.yaml` | App ID を `3623421`（okccl-backstage）→ `3638469`（okccl-gitops）、installID を `131473848` に修正 |
