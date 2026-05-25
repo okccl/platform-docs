@@ -417,11 +417,6 @@ PAT への完全移行を試みたが、**GitHub Fine-grained PAT は GitHub Pac
 
 GitHub API でトークン取得成功を確認した後、bootstrap を再実行した。
 
-### 今後の対応
-
-- GitHub App / PAT の役割分担を `github-auth-design.md` として文書化する（bootstrap 完了後）
-- `scaffolder-design.md` の権限記述は `github-auth-design.md` への参照に置き換える
-
 ---
 
 ## 変更ファイル一覧
