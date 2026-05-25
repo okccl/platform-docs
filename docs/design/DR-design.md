@@ -17,15 +17,23 @@
 | **クラスター全損** | `k3d cluster delete` 等でクラスター喪失 | MinIO（ローカル）からリストア |
 | **WSL 全損** | WSL ディストリビューション全体の消失 | GCS（クラウド）からリストア |
 
-### 1.3 RTO / RPO 目標
+### 1.3 RTO / RPO 目標・実測値
 
-| シナリオ | RPO | RTO |
+| シナリオ | RPO | RTO（目標） | RTO（実測） |
+|---|---|---|---|
+| Pod / PV 障害 | WAL ラグ分（数十秒以内） | 数分 | — |
+| クラスター全損 | 最終 ScheduledBackup 時刻（毎日 02:00） | 1 時間以内 | **31〜67 秒**（シナリオ A 実測） |
+| WSL 全損 | 最終 GCS 同期時刻（前日 23:00） | 数時間 | 未計測 |
+
+**シナリオ A（PVC 破損リストア）実測値 — 2026-05-26**
+
+| クラスター | RTO | 最終バックアップ（RPO 基準） |
 |---|---|---|
-| Pod / PV 障害 | WAL ラグ分（数十秒以内） | 数分 |
-| クラスター全損 | 最終 ScheduledBackup 時刻（21:00） | 1 時間以内（未計測） |
-| WSL 全損 | 最終 GCS 同期時刻（翌日 00:00） | 数時間（未計測） |
+| keycloak-db（1 インスタンス） | **41 秒** | 2026-05-10 12:02 UTC |
+| backstage-db（1 インスタンス） | **31 秒** | 2026-05-11 20:21 UTC |
+| sample-backend-db（2 インスタンス） | **67 秒** | 2026-05-11 20:02 UTC |
 
-> RTO/RPO は現時点では目標値。DR 手順書完成後に実測で検証する。
+> 実測は k3d ローカル環境（WSL2）での計測。`kubectl apply` から "Cluster in healthy state" までの時間。
 
 ---
 
@@ -171,7 +179,8 @@ GCS に保存されているのは最終同期時刻（毎日 23:00）時点の�
 |---|---|---|
 | `ignoreDifferences` 設定 | **完了** | 3.1 節 |
 | PVC Retain ポリシー設定 | **完了**（`local-path-retain` SC + 既存 PV パッチ） | 3.1 節 |
-| DR マニフェスト生成スクリプト | **完了**（`make generate-dr-manifests`） | 3.1 節 |
+| DR マニフェスト生成スクリプト | **完了**（`make generate-dr-manifests`・GitOps 直接書き換え方式） | 3.1 節 |
+| `common-db` Helm chart recovery 対応 | **完了**（`db.recovery.enabled` values）| — |
 | クラウドバックアップ実装 | **完了**（`make backup-to-gcs`・毎日 23:00 cron） | 2.2 節 |
 | DR 手順書（Runbook）作成 | **完了** | `runbook/dr-restore.md` |
-| RTO/RPO 実測 | 未実装（DR 手順確立後に計測） | 1.3 節 |
+| RTO/RPO 実測 | **完了**（シナリオ A: 31〜67 秒） | 1.3 節 |

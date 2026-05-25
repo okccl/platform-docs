@@ -14,30 +14,46 @@
 
 **前提**: k3d クラスター・ArgoCD は稼働中。特定の CNPG クラスターの PVC が破損している。
 
-### 1. DR マニフェストを生成
+### 1. GitOps を recovery bootstrap に書き換える
 
 ```bash
 cd ~/platform-infra && make generate-dr-manifests
-# → k3d/dr/<cluster-name>-recovery.yaml が生成される
 ```
 
-### 2. 対象クラスターを削除して recovery マニフェストを apply
+スクリプトが以下を自動で書き換える:
+- `~/platform-gitops/platform/.../cluster.yaml` → `spec.bootstrap: recovery` に変更
+- `~/apps-gitops/apps/.../values.yaml` → `db.recovery.enabled: true` を追加
 
-CNPG の validating webhook により `spec.bootstrap` はイミュータブルなため、クラスターを削除してから recovery マニフェストを apply する。ArgoCD が自動再作成する前（通常 30 秒〜数分の猶予）に apply すること。
+変更内容を確認して commit + push する:
+
+```bash
+cd ~/platform-gitops
+git diff                  # 変更内容を確認
+git add -A && git commit -m "dr: activate recovery bootstrap for ${CLUSTER_NAME}" && git push
+
+cd ~/apps-gitops
+git diff                  # （apps-gitops クラスターが対象の場合）
+git add -A && git commit -m "dr: activate recovery bootstrap for ${CLUSTER_NAME}" && git push
+```
+
+### 2. 対象クラスターと破損 PVC を削除する
+
+ArgoCD が gitops の recovery manifest を検知してクラスターを自動再作成するが、
+CNPG webhook により既存クラスターへの bootstrap 変更は拒否される（これは想定内）。
+クラスターを削除すると ArgoCD が recovery bootstrap で即座に再作成する。
 
 ```bash
 CLUSTER_NAME=keycloak-db   # 対象クラスター名に変更
 NAMESPACE=keycloak          # 対象 namespace に変更
 
-# クラスターを削除（PVC は Retain ポリシーで残存）
+# クラスターを削除（ArgoCD が recovery bootstrap で自動再作成する）
 kubectl delete cluster ${CLUSTER_NAME} -n ${NAMESPACE}
 
 # 破損した PVC を削除
 kubectl delete pvc -n ${NAMESPACE} -l cnpg.io/cluster=${CLUSTER_NAME}
-
-# recovery マニフェストを apply
-kubectl apply -f ~/platform-infra/k3d/dr/${CLUSTER_NAME}-recovery.yaml
 ```
+
+> **ポイント**: ArgoCD の auto-sync を止める必要はない。ArgoCD 自身が recovery bootstrap でクラスターを作成するため、race condition が発生しない。
 
 ### 3. リストア完了を待機
 
@@ -48,13 +64,36 @@ kubectl get cluster ${CLUSTER_NAME} -n ${NAMESPACE} -w
 
 アプリケーション疎通テストでデータ整合性を確認する。
 
-### 4. （任意）GitOps クリーン状態に戻す
+### 4. データ整合性チェック
 
-DR クラスターを削除すると ArgoCD が `initdb` で再作成する。CNPG は PVC 上の既存データを検知し initdb をスキップするため、データは保全されたまま定常状態に戻る。
+recovery bootstrap は initdb をスキップするため、バックアップ取得後に変更があったフィールドは手動で同期が必要。
+
+**DB ユーザーパスワードの確認**（バックアップ取得後に Secret が変更された場合）:
 
 ```bash
-kubectl delete cluster ${CLUSTER_NAME} -n ${NAMESPACE}
+# 例: backstage-db
+PASS=$(kubectl get secret backstage-db-credentials -n backstage \
+  -o jsonpath='{.data.password}' | base64 -d)
+kubectl exec backstage-db-1 -n backstage -c postgres -- \
+  psql -U postgres -c "ALTER ROLE app WITH PASSWORD '${PASS}';"
 ```
+
+### 5. DR 後の GitOps 復元
+
+running クラスターの `spec.bootstrap` は変更されないが（CNPG webhook でイミュータブル）、
+GitOps ソースは元の `initdb` に戻す。ArgoCD は `ignoreDifferences` の設定により差分を無視する。
+
+```bash
+cd ~/platform-gitops
+git checkout -- .
+git add -A && git commit -m "dr: restore initdb bootstrap after DR" && git push
+
+cd ~/apps-gitops
+git checkout -- .
+git add -A && git commit -m "dr: restore initdb bootstrap after DR" && git push
+```
+
+> **WAL アーカイブについて**: クラスターは recovery bootstrap のまま動作し続けるため、WAL アーカイブは正常に継続される（recovery bootstrap は "Expected empty archive" チェックをスキップする）。
 
 ---
 
@@ -73,33 +112,34 @@ make bootstrap
 
 > CNPG クラスターは `initdb` で作成されるが、k3d 再作成のため PVC は空。次のステップでリストアする。
 
-### 2. DR マニフェストを生成
+### 2. GitOps を recovery bootstrap に書き換える
 
 ```bash
 cd ~/platform-infra && make generate-dr-manifests
 ```
 
+各 gitops リポジトリで commit + push する（シナリオ A の Step 1 と同様）。
+
 ### 3. 各クラスターをリストア
 
-`keycloak-db` / `backstage-db` と、`db.backup.enabled: true` なユーザーアプリのクラスターが対象。各クラスターに対して以下を実行する。
+`keycloak-db` / `backstage-db` と、`db.backup.enabled: true` なユーザーアプリのクラスターが対象。
+各クラスターに対して以下を実行する。
 
 ```bash
 CLUSTER_NAME=keycloak-db
 NAMESPACE=keycloak
 
-# initdb クラスターを削除（PVC は Retain で残存するが空のため削除）
+# initdb クラスターを削除（ArgoCD が recovery bootstrap で自動再作成する）
 kubectl delete cluster ${CLUSTER_NAME} -n ${NAMESPACE}
-kubectl delete pvc -n ${NAMESPACE} -l cnpg.io/cluster=${CLUSTER_NAME}
-
-# recovery マニフェストを apply
-kubectl apply -f ~/platform-infra/k3d/dr/${CLUSTER_NAME}-recovery.yaml
+# PVC は k3d 再作成で消えているため削除不要
 
 # リストア完了を待機
 kubectl get cluster ${CLUSTER_NAME} -n ${NAMESPACE} -w
 # "Cluster in healthy state" になれば完了
 ```
 
-`backstage-db` も同様に実行（`CLUSTER_NAME=backstage-db NAMESPACE=backstage`）。
+`backstage-db`（`CLUSTER_NAME=backstage-db NAMESPACE=backstage`）、
+ユーザーアプリのクラスターも同様に実行する。
 
 ### 4. データ整合性を確認
 
@@ -107,13 +147,11 @@ kubectl get cluster ${CLUSTER_NAME} -n ${NAMESPACE} -w
 - https://backstage.platform.local — ログイン・カタログ表示が正常か
 - ユーザーアプリ（存在する場合）— API 疎通確認
 
-### 5. （任意）GitOps クリーン状態に戻す
+DB ユーザーパスワードの確認も実施すること（シナリオ A Step 4 参照）。
 
-各 DR クラスターを削除すると ArgoCD が `initdb` で再作成する。CNPG は PVC 上のデータを検知し initdb をスキップするため、クリーンな GitOps 状態に戻る。
+### 5. DR 後の GitOps 復元
 
-```bash
-kubectl delete cluster ${CLUSTER_NAME} -n ${NAMESPACE}
-```
+シナリオ A Step 5 と同様に実行する。
 
 ---
 
@@ -181,3 +219,37 @@ rclone copy \
 ### 3. シナリオ B を実行
 
 MinIO 上のデータが復元できたことを確認した後、**シナリオ B: クラスター全損リストア** を実行する。
+
+---
+
+## トラブルシュート
+
+### WAL アーカイブが "Expected empty archive" で失敗する
+
+クラスターが `initdb` bootstrap で再作成され、MinIO に既存のバックアップデータがある場合に発生する。
+DR 後の GitOps 復元ステップでクラスターを削除・再作成した場合に起きる。
+
+**対処**: MinIO バックアップデータをクリアしてから手動でベースバックアップを取得する。
+
+```bash
+# MinIO データをクリア（警告: バックアップが消える）
+docker exec minio-external mc rm --recursive --force local/cnpg-backup/${CLUSTER_NAME}/
+
+# WAL アーカイブ再開を確認後、手動バックアップをトリガー
+kubectl apply -f - <<EOF
+apiVersion: postgresql.cnpg.io/v1
+kind: Backup
+metadata:
+  name: ${CLUSTER_NAME}-manual-$(date +%Y%m%d)
+  namespace: ${NAMESPACE}
+spec:
+  method: barmanObjectStore
+  cluster:
+    name: ${CLUSTER_NAME}
+EOF
+```
+
+### ArgoCD の sync が OutOfSync のまま
+
+recovery bootstrap でクラスターが動作中の場合、GitOps に `initdb` bootstrap が残っていると差分として表示されるが正常。
+ArgoCD Application に `ignoreDifferences` が設定されており `RespectIgnoreDifferences=true` が有効なため sync は実行されない（意図した動作）。
