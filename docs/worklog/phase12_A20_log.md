@@ -10,6 +10,9 @@
 | 4 | ArgoCD auto-sync の一時停止と復元 |
 | 5 | WAL アーカイブの正常化（MinIO クリア → 手動バックアップ） |
 | 6 | DR 設計・Runbook の課題発見 |
+| 7 | 手動ベースバックアップのトリガー（全 3 クラスター） |
+| 8 | ArgoCD auto-sync 回避策の設計検討（GitOps-first 方式を採用） |
+| 9 | GitOps-first DR 実装（common-db chart 拡張・generate-dr-manifests 全面改修・k3d/dr 廃止） |
 
 ---
 
@@ -239,8 +242,95 @@ kubectl delete pod keycloak-keycloakx-0 -n keycloak --force --grace-period=0
 
 ---
 
+---
+
+## 7. 手動ベースバックアップのトリガー
+
+WAL アーカイブ正常化（セクション 5）後、MinIO のバックアップデータをクリアしたため新しいベースバックアップが存在しない状態だった。3 クラスター分の `Backup` リソースを apply してベースバックアップをトリガーし、全て completed になったことを確認した。
+
+```bash
+kubectl apply -f - <<'EOF'
+apiVersion: postgresql.cnpg.io/v1
+kind: Backup
+metadata:
+  name: keycloak-db-manual-20260526
+  namespace: keycloak
+spec:
+  method: barmanObjectStore
+  cluster:
+    name: keycloak-db
+---
+# backstage-db / sample-backend-db も同様
+EOF
+```
+
+3 クラスター全て `completed` に達したことを確認。
+
+---
+
+## 8. ArgoCD auto-sync 回避策の設計検討
+
+セクション 3 の課題（ArgoCD との race condition）に対して、auto-sync 停止より良い回避策を検討した。
+
+### 問題の構造
+
+`spec.bootstrap` が CNPG webhook で immutable なため、bootstrap 変更には delete → recreate が必須。削除の瞬間に ArgoCD（selfHeal）が initdb で再作成するため、その後 recovery マニフェストを apply しても webhook に弾かれる。
+
+### 検討した案
+
+| 案 | 概要 | 採否 |
+|---|---|---|
+| 案1: `ignoreDifferences` のみ | ArgoCD が bootstrap 差分を無視するが、delete 直後の「ArgoCD が initdb で作成する」ことは防げない。レース条件は残る | 不採用（部分的解決のみ） |
+| **案2: GitOps を recovery に書き換えてから delete** | gitops に recovery bootstrap を push → ArgoCD 自身が recovery でクラスターを作成 → レース条件ゼロ | **採用** |
+| 案3: `resource.exclusions` で CNPG を一時除外 | ArgoCD ConfigMap の変更が必要で侵襲的 | 不採用 |
+
+### 案2の採用理由
+
+「ArgoCD を迂回するのではなく、ArgoCD を DR のエグゼキューターとして活用する」という考え方が GitOps の設計思想と一致している。また、全 ArgoCD Application にすでに `ignoreDifferences`（`spec.bootstrap` + `spec.externalClusters`）と `RespectIgnoreDifferences=true` が設定済みであったため、「DR 後に gitops を initdb に戻しても running クラスターは影響を受けない」という条件がすでに満たされていた。
+
+---
+
+## 9. GitOps-first DR 実装
+
+### common-db Helm chart への recovery bootstrap 対応追加
+
+`platform-charts/charts/common-db` の library chart（`_helpers.tpl`）に `db.recovery.enabled` 値を追加。`true` のとき `spec.bootstrap.recovery` と `spec.externalClusters` を生成し、`false`（デフォルト）のとき従来通り `spec.bootstrap.initdb` を生成する。
+
+```yaml
+# values.yaml に追加したデフォルト値
+db:
+  recovery:
+    enabled: false
+    source: minio-backup
+    endpointURL: "http://host.k3d.internal:9000"
+    bucketName: "cnpg-backup"
+    secretName: "minio-backup-secret"
+```
+
+apps-gitops で `db.recovery.enabled: true` を設定すると Helm が recovery bootstrap のマニフェストを生成するため、platform-charts の変更だけで apps-gitops 側のすべてのアプリに対応できる。
+
+### generate-dr-manifests.py の全面改修
+
+旧動作（`k3d/dr/` に生成 → 手動 `kubectl apply`）から、gitops リポジトリを直接書き換える方式に変更。
+
+| スキャン対象 | 旧動作 | 新動作 |
+|---|---|---|
+| `platform-gitops/.../cluster.yaml` | `k3d/dr/` に YAML 生成 | ファイルを直接上書き（`spec.bootstrap: recovery` + `externalClusters` を追加） |
+| `apps-gitops/.../values.yaml` | `k3d/dr/` に YAML 生成 | `db.recovery.enabled: true` をテキスト挿入（他フィールドのフォーマットを変えない） |
+
+apps-gitops の values.yaml はフォーマット保持のため `ruamel.yaml` ではなくテキスト挿入方式を採用（`ruamel.yaml` が環境にないため）。`db:` セクションの末尾（次の top-level キーの直前）に `db.recovery` ブロックを挿入する。
+
+### k3d/dr/ ディレクトリの廃止
+
+gitops ファイル自体が DR マニフェストになったため `k3d/dr/` は冗長。`.yaml` はもともと gitignore 済みで未追跡だったため、`README.md` と `.gitignore` のみ削除して廃止した。
+
+---
+
 ## 変更ファイル一覧
 
 | ファイル | 変更内容 |
 |---|---|
-| `platform-infra/scripts/generate-dr-manifests.py` | apps-gitops glob パターンを 2 階層に修正、`serverName` をテンプレートに追加 |
+| `platform-infra/scripts/generate-dr-manifests.py` | ①apps-gitops glob パターンを 2 階層に修正、`serverName` 追加（バグ修正） ②GitOps 直接書き換え方式に全面改修（k3d/dr/ 廃止） |
+| `platform-infra/k3d/dr/` | 廃止（README.md・.gitignore を削除） |
+| `platform-charts/charts/common-db/templates/_helpers.tpl` | `db.recovery.enabled: true` で recovery bootstrap・externalClusters を生成する分岐を追加 |
+| `platform-charts/charts/common-db/values.yaml` | `db.recovery` デフォルト値追加（`enabled: false`） |
