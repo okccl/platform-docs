@@ -15,6 +15,9 @@
 | 9 | GitOps-first DR 実装（common-db chart 拡張・generate-dr-manifests 全面改修・k3d/dr 廃止） |
 | 10 | シナリオ B 着手：bootstrap バグ発見①（backstage-secret GITHUB_APP_PRIVATE_KEY 参照先誤り） |
 | 11 | bootstrap バグ発見②：ghcr-pull-secret の PAT 移行漏れ（okccl-gitops に packages:read 追加で解消） |
+| 12 | Makefile の user-apps-infra 待機条件バグ（ApplicationSet 対応） |
+| 13 | シナリオ B 第 1 回試行失敗：RespectIgnoreDifferences × SSA バグ（設計変更・実装修正） |
+| 14 | シナリオ B 第 2 回試行：barman-cloud-check-wal-archive "Expected empty archive" 失敗（調査中） |
 
 ---
 
@@ -419,13 +422,119 @@ GitHub API でトークン取得成功を確認した後、bootstrap を再実�
 
 ---
 
+---
+
+## 12. Makefile の user-apps-infra 待機条件バグ
+
+### 背景
+
+シナリオ B の bootstrap 実行中、`bootstrap-apps` ターゲットが `user-apps-infra 待機中...` から進まずハングした。
+
+### 原因
+
+`bootstrap-apps` は `kubectl get application user-apps-infra` が Healthy になるまで待機するが、`user-apps-infra` は commit `7277f92`（5/22）で Application → ApplicationSet に変換済み。生成される Application 名は `user-apps-infra-{{appName}}`（例: `user-apps-infra-sample`）であり、`user-apps-infra` という名前の Application は存在しない。
+
+### 対処
+
+待機条件を `user-apps-infra-*` Application が 1 件以上存在し、かつ全て Healthy になるまで待つ条件に変更した。
+
+```bash
+# 変更前
+until kubectl get application user-apps-infra -n argocd \
+    -o jsonpath='{.status.health.status}' 2>/dev/null | grep -q Healthy; do
+
+# 変更後
+until \
+    kubectl get applications -n argocd --no-headers 2>/dev/null \
+        | grep "^user-apps-infra-" | grep -q . \
+    && ! kubectl get applications -n argocd --no-headers 2>/dev/null \
+        | grep "^user-apps-infra-" | grep -qv Healthy; do
+```
+
+---
+
+## 13. シナリオ B 第 1 回試行失敗：RespectIgnoreDifferences × SSA バグ
+
+### 背景
+
+bootstrap 完了後、`make generate-dr-manifests` → push → kubectl delete cluster × 3 を実施した。
+
+### 問題
+
+全クラスターが `bootstrap=initdb`・`timeline=1` で起動。recovery bootstrap が適用されていなかった。
+
+### 原因
+
+`RespectIgnoreDifferences=true`（syncOptions）と `ServerSideApply=true` の組み合わせにより、ArgoCD が SSA の apply リクエストから `spec.bootstrap` フィールドを除外する。これはクラスターの**新規作成時にも適用**されるため、CNPG がデフォルトの `initdb` で起動してしまう。
+
+`RespectIgnoreDifferences=true` は「DR 後に gitops を `initdb` に戻した際、ArgoCD が running クラスターに `initdb` を apply しようとするのを防ぐ」ために追加した設定だったが、recovery 自体も妨げるという自己矛盾を含んでいた。
+
+### 設計の再評価
+
+この問題を機に DR 後の「gitops を initdb に戻す」ステップ自体を廃止する方針に変更した。
+
+- `spec.bootstrap` は一度きりの初期化イベントであり、ongoing desired state ではない
+- DR 後も recovery のまま gitops を維持することで、gitops が現実を反映する
+- WAL アーカイブの "Expected empty archive" 制約とも整合する（recovery bootstrap のクラスターは WAL チェックをスキップする設計）
+
+これにより `RespectIgnoreDifferences=true` 自体が不要となる。
+
+### 対処
+
+以下のファイルから `RespectIgnoreDifferences=true` を削除した。
+
+- `platform-gitops/platform/applications/keycloak-db.yaml`
+- `platform-gitops/platform/applications/backstage-db.yaml`
+- `apps-gitops/apps/sample/sample-backend/application.yaml`
+- `platform-gitops/backstage/templates/fullstack/.../application.yaml`（Scaffolder テンプレート）
+
+DR-design.md・dr-restore.md も新方針に合わせて更新した。
+
+---
+
+## 14. シナリオ B 第 2 回試行：barman-cloud-check-wal-archive 失敗
+
+### 背景
+
+gitops を initdb に戻してから bootstrap 再実行 → `make generate-dr-manifests` → push → kubectl delete cluster × 3 を実施。
+
+### 問題
+
+recovery bootstrap クラスターが "Setting up primary" のままエラーで再起動を繰り返す。
+
+```
+barman-cloud-check-wal-archive checking the first wal
+ERROR: WAL archive check failed for server keycloak-db: Expected empty archive
+restore error: while restoring cluster: unexpected failure invoking barman-cloud-wal-archive: exit status 1
+```
+
+### 調査
+
+- MinIO には有効なバックアップが存在する（base backup + WAL で計 44MB）
+- `barman-cloud-check-wal-archive` は `--system-id` 引数なしで呼び出される
+- `--system-id` なしでは「WAL が存在するか」のみを判定するため、同一クラスターの WAL でも "Expected empty archive" で失敗する
+- `make bootstrap` が作成した新 initdb クラスターは旧バックアップと異なる system ID を持つ
+
+`sample-backend-db` は `RespectIgnoreDifferences=true` を削除する前のコミットの影響で initdb のまま起動した。keycloak-db・backstage-db は recovery bootstrap が正しく適用されたが（第 13 節の修正が効いている）、MinIO の WAL チェックで失敗している。
+
+### 未解明
+
+シナリオ A（5/25 実施）では同条件（MinIO に旧 system ID の WAL あり）で recovery が成功している。シナリオ A は旧方式（kubectl apply + auto-sync 停止）で実施しており、今回の GitOps-first 方式との違いが原因かは不明。セッション継続時に調査する。
+
+---
+
 ## 変更ファイル一覧
 
 | ファイル | 変更内容 |
 |---|---|
 | `platform-infra/scripts/generate-dr-manifests.py` | ①apps-gitops glob パターンを 2 階層に修正、`serverName` 追加（バグ修正） ②GitOps 直接書き換え方式に全面改修（k3d/dr/ 廃止） |
 | `platform-infra/k3d/dr/` | 廃止（README.md・.gitignore を削除） |
+| `platform-infra/k3d/Makefile` | user-apps-infra 待機条件を ApplicationSet 対応に修正（`user-apps-infra-*` Application が全て Healthy になるまで待機） |
 | `platform-charts/charts/common-db/templates/_helpers.tpl` | `db.recovery.enabled: true` で recovery bootstrap・externalClusters を生成する分岐を追加 |
 | `platform-charts/charts/common-db/values.yaml` | `db.recovery` デフォルト値追加（`enabled: false`） |
 | `platform-gitops/platform/secrets/config/backstage-secret.yaml` | `GITHUB_APP_PRIVATE_KEY` の参照先を `backstage-github-app-source` → `gitops-github-app` に修正 |
 | `platform-gitops/platform/secrets/generators/backstage-ghcr-token.yaml` | App ID を `3623421`（okccl-backstage）→ `3638469`（okccl-gitops）、installID を `131473848` に修正 |
+| `platform-gitops/platform/applications/keycloak-db.yaml` | `RespectIgnoreDifferences=true` を削除 |
+| `platform-gitops/platform/applications/backstage-db.yaml` | `RespectIgnoreDifferences=true` を削除 |
+| `platform-gitops/backstage/templates/fullstack/.../application.yaml` | `RespectIgnoreDifferences=true` を削除（Scaffolder テンプレート） |
+| `apps-gitops/apps/sample/sample-backend/application.yaml` | `RespectIgnoreDifferences=true` を削除 |
