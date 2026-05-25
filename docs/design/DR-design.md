@@ -101,17 +101,19 @@ make generate-dr-manifests
 kubectl delete cluster + pvc
   → ArgoCD が gitops（recovery）から即座に再作成 ← レース条件ゼロ
 
-DR 完了後: git checkout -- . → push（initdb に戻す）
-  → ignoreDifferences により running クラスターは影響なし
+DR 完了後: gitops は recovery のまま維持する
+  → spec.bootstrap は一度きりの初期化イベントであり ongoing desired state ではない
+  → gitops が現実（recovery で起動済み）を反映した状態になる
+  → 以後のクラスター再作成（次回 DR 等）も MinIO から自動リストアされる
 ```
 
-ArgoCD を迂回するのではなく、ArgoCD を DR のエグゼキューターとして活用する。GitOps が一時的に recovery bootstrap を宣言するため、任意のタイミングで delete しても必ず recovery で再作成される。
+ArgoCD を迂回するのではなく、ArgoCD を DR のエグゼキューターとして活用する。GitOps が recovery bootstrap を宣言するため、任意のタイミングで delete しても必ず recovery で再作成される。
 
-DR 後 gitops を initdb に戻しても、running クラスターの bootstrap は CNPG webhook で保護されており変更されない。ArgoCD は `ignoreDifferences` でこの差分を無視する（詳細は次節）。
+DR 後に gitops を initdb に戻さない理由: `spec.bootstrap` は PVC が空の場合のみ実行される初期化イベントであり、running クラスターの動作には影響しない。gitops を initdb に戻すことは「現実と乖離した宣言」になるだけで実益がなく、後述の WAL アーカイブ制約とも矛盾する。
 
 #### ArgoCD ignoreDifferences の設定
 
-DR 実行後、ArgoCD はクラスターの `spec.bootstrap` が `recovery` になっていることを検知し `initdb` に戻そうとするが、CNPG webhook がこれを拒否する。これを防ぐため、対象の ArgoCD Application に以下の設定を追加する（**実装済み**）。
+`spec.bootstrap` は一度きりの初期化イベントであり GitOps の ongoing desired state ではないという設計思想を ArgoCD に伝えるため、対象の ArgoCD Application に以下の設定を追加する（**実装済み**）。
 
 ```yaml
 spec:
@@ -123,9 +125,9 @@ spec:
         - /spec/externalClusters
 ```
 
-`bootstrap` は一度きりの初期化イベントであり GitOps の管轄外という設計思想を ArgoCD に明示するものであり、これは本番標準のパターン。
+この設定の主な目的は **diff 表示の正規化**（ArgoCD が `spec.bootstrap` の差分を OutOfSync として表示しないようにする）であり、CNPG + ArgoCD での標準パターン。
 
-対象 Application（keycloak-db / backstage-db / sample-backend）に設定済み。`RespectIgnoreDifferences=true` を syncOptions に合わせて設定することで、sync 実行時にも該当フィールドへのパッチを抑止している。
+**`RespectIgnoreDifferences=true` は設定しない**。この syncOption は ServerSideApply の apply リクエストから対象フィールドを除外する。一見「安全」に見えるが、クラスターの新規作成時（DR による再作成を含む）にも `spec.bootstrap` が apply リクエストから除外され、CNPG がデフォルトの `initdb` でクラスターを起動してしまうという致命的な副作用がある。DR 後に gitops が recovery を宣言したまま維持されるため、この設定は不要。
 
 #### PVC Retain ポリシー
 
@@ -167,11 +169,11 @@ CNPG のバックアップ開始時に `barman-cloud-check-wal-archive` が実�
 
 この差異から以下の設計上の制約が生じる。
 
-**DR 後にクラスターを `initdb` で再作成してはいけない**: DR 完了後、running クラスターを削除して ArgoCD に `initdb` で再作成させると（旧設計の「GitOps クリーン状態に戻す」ステップ）、MinIO に DR 以前のバックアップデータが残っているため WAL アーカイブが必ず失敗する。
+**DR 後にクラスターを `initdb` で再作成してはいけない**: MinIO に DR 以前のバックアップデータが残っているため WAL アーカイブが必ず失敗する。
 
-**現設計での解決**: DR 後も running クラスターは `recovery` bootstrap のまま運用し続ける。ArgoCD は `ignoreDifferences` でこの差分を無視する。`recovery` bootstrap のクラスターは WAL アーカイブチェックをスキップするため、MinIO の既存データと共存できる。
+**現設計での解決**: DR 後も gitops は `recovery` bootstrap のまま維持する。ArgoCD が再作成するクラスターは常に `recovery` bootstrap で起動するため、この問題は原理的に発生しない。`recovery` bootstrap のクラスターは WAL アーカイブチェックをスキップするため、MinIO の既存データと共存できる。
 
-**クラスターを誤削除して `initdb` で再作成された場合の対処**: MinIO のバックアップデータをクリアしてから手動でベースバックアップをトリガーする（詳細は Runbook トラブルシュート節を参照）。
+**クラスターを誤削除した場合**: ArgoCD が gitops（`recovery`）から即座に再作成するため、MinIO にバックアップがある限り自動的にリストアされる。MinIO が空の場合（初回 bootstrap 時のみ）は WAL アーカイブが失敗するため、MinIO のバックアップデータをクリアしてから手動でベースバックアップをトリガーする（詳細は Runbook トラブルシュート節を参照）。
 
 ### 3.2 クラスター内障害（Pod / PV 障害）からの復旧
 
@@ -216,7 +218,7 @@ GCS に保存されているのは最終同期時刻（毎日 23:00）時点の�
 
 | 項目 | 状態 | 参照 |
 |---|---|---|
-| `ignoreDifferences` 設定 | **完了** | 3.1 節 |
+| `ignoreDifferences` 設定（`RespectIgnoreDifferences` なし） | **完了** | 3.1 節 |
 | PVC Retain ポリシー設定 | **完了**（`local-path-retain` SC + 既存 PV パッチ） | 3.1 節 |
 | DR マニフェスト生成スクリプト | **完了**（`make generate-dr-manifests`・GitOps 直接書き換え方式） | 3.1 節 |
 | `common-db` Helm chart recovery 対応 | **完了**（`db.recovery.enabled` values）| — |

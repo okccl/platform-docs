@@ -78,22 +78,11 @@ kubectl exec backstage-db-1 -n backstage -c postgres -- \
   psql -U postgres -c "ALTER ROLE app WITH PASSWORD '${PASS}';"
 ```
 
-### 5. DR 後の GitOps 復元
+### 5. DR 完了確認
 
-running クラスターの `spec.bootstrap` は変更されないが（CNPG webhook でイミュータブル）、
-GitOps ソースは元の `initdb` に戻す。ArgoCD は `ignoreDifferences` の設定により差分を無視する。
+gitops は recovery bootstrap のまま維持する（`git checkout` は不要）。
 
-```bash
-cd ~/platform-gitops
-git checkout -- .
-git add -A && git commit -m "dr: restore initdb bootstrap after DR" && git push
-
-cd ~/apps-gitops
-git checkout -- .
-git add -A && git commit -m "dr: restore initdb bootstrap after DR" && git push
-```
-
-> **WAL アーカイブについて**: クラスターは recovery bootstrap のまま動作し続けるため、WAL アーカイブは正常に継続される（recovery bootstrap は "Expected empty archive" チェックをスキップする）。
+`spec.bootstrap` は一度きりの初期化イベントであり、running クラスターの動作には影響しない。gitops が recovery を宣言したまま維持されることで、以後のクラスター再作成も MinIO から自動リストアされる。WAL アーカイブは recovery bootstrap のクラスターが "Expected empty archive" チェックをスキップするため、正常に継続される。
 
 ---
 
@@ -149,9 +138,9 @@ kubectl get cluster ${CLUSTER_NAME} -n ${NAMESPACE} -w
 
 DB ユーザーパスワードの確認も実施すること（シナリオ A Step 4 参照）。
 
-### 5. DR 後の GitOps 復元
+### 5. DR 完了確認
 
-シナリオ A Step 5 と同様に実行する。
+シナリオ A Step 5 と同様。gitops は recovery bootstrap のまま維持する。
 
 ---
 
@@ -249,7 +238,6 @@ spec:
 EOF
 ```
 
-### ArgoCD の sync が OutOfSync のまま
+### ArgoCD の sync が OutOfSync のまま（CNPG Cluster）
 
-recovery bootstrap でクラスターが動作中の場合、GitOps に `initdb` bootstrap が残っていると差分として表示されるが正常。
-ArgoCD Application に `ignoreDifferences` が設定されており `RespectIgnoreDifferences=true` が有効なため sync は実行されない（意図した動作）。
+`ignoreDifferences` が `spec.bootstrap` / `spec.externalClusters` に設定されているため、これらのフィールドの差分は OutOfSync としてカウントされない。もし OutOfSync が表示される場合は `spec.bootstrap` 以外のフィールドに差分があるため、`argocd app diff <app-name>` で内容を確認すること。
