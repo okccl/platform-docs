@@ -190,7 +190,7 @@ Discord 通知（`CNPGWalArchivingFailing` / `CNPGLastBackupFailed` アラート
 
 PVC 破損が発生した場合は MinIO バックアップからの手動リストアが必要。`make generate-dr-manifests` で gitops を recovery bootstrap に書き換えて push すると、ArgoCD が recovery bootstrap でクラスターを再作成する。リストア完了後は gitops を元の `initdb` に戻す（running クラスターは `ignoreDifferences` で保護されているため無影響）。DR 後にクラスターを `initdb` で再作成すると WAL アーカイブが壊れるため、クラスターの削除は行わないこと（3.1 節「WAL アーカイブと bootstrap 方式の関係」参照）。
 
-> **詳細手順**: [Runbook-002: DB リストア手順 — シナリオ A](../runbook/dr-restore.md)
+> **詳細手順**: [Runbook: DB リストア手順 — シナリオ A](../runbook/dr-restore.md)
 
 ### 3.3 クラスター全損からの復旧（k3d 再作成）
 
@@ -198,7 +198,7 @@ MinIO は k3d コンテナ外の Docker コンテナ（`minio-external`）とし
 
 復旧フローは `make bootstrap` でまず定常状態（ArgoCD + `initdb` クラスター）を再構成し、その後 DR マニフェストで `recovery` bootstrap に切り替える 2 フェーズ構成とした。`make bootstrap` を起点にすることで DR 手順がベースラインの起動フローを完全に再利用でき、独立した再現性が確保される。
 
-> **詳細手順**: [Runbook-002: DB リストア手順 — シナリオ B](../runbook/dr-restore.md)
+> **詳細手順**: [Runbook: DB リストア手順 — シナリオ B](../runbook/dr-restore.md)
 
 ### 3.4 WSL 全損からの復旧
 
@@ -208,7 +208,7 @@ GCS→MinIO→CNPG の 2 ホップを選んだのは、CNPG が GCS S3 互換 AP
 
 GCS に保存されているのは最終同期時刻（毎日 23:00）時点のスナップショットのみで WAL は含まれない。そのため最終 GCS 同期以降の変更は復元不可（最大 RPO = 24 時間）。GCS の Object Lifecycle（30 日保持）の範囲内であれば古い時点のバックアップへの復元も可能。
 
-> **詳細手順**: [Runbook-002: DB リストア手順 — シナリオ C](../runbook/dr-restore.md)
+> **詳細手順**: [Runbook: DB リストア手順 — シナリオ C](../runbook/dr-restore.md)
 
 ---
 
