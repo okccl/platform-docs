@@ -28,7 +28,9 @@ PostgreSQL（CNPG Pod）
                                   ├── backstage-db/wals/
                                   ├── backstage-db/data/
                                   ├── keycloak-db/wals/
-                                  └── keycloak-db/data/
+                                  ├── keycloak-db/data/
+                                  ├── sample-backend-db/wals/
+                                  └── sample-backend-db/data/
                                                  │
                                   rclone copy（毎日 23:00、WSL cron）
                                                  ▼
@@ -252,7 +254,7 @@ CNPG の Prometheus メトリクスをもとに PrometheusRule を定義し、Al
 
 ### 6.1 クラスター全損時（MinIO からリストア）
 
-`make generate-dr-manifests` で recovery クラスターのマニフェストを動的生成し、MinIO 上のバックアップを使って復旧する。生成スクリプトは platform-gitops の CNPG Cluster 定義を読み取るため、クラスター設定変更後もマニフェストが最新の状態を反映する。
+`make generate-dr-manifests` で platform-gitops の CNPG Cluster YAML と apps-gitops の values.yaml を直接 recovery bootstrap に書き換え、MinIO 上のバックアップを使って復旧する。書き換えスクリプトが gitops ソースファイルを走査するため、クラスター設定変更後も常に最新の定義が反映される。
 
 ### 6.2 WSL 全損時（GCS からリストア）
 
