@@ -71,14 +71,20 @@ Backstage Scaffolder でアプリ払い出し時に基本セットの `aqua.yaml
 
 | コマンド | 役割 | 実行タイミング |
 |---|---|---|
-| `make bootstrap` | WSL レベルのセットアップ（Homebrew・aqua・Docker・direnv のインストール、`.bashrc` への追記） | 新規 WSL 環境構築時に 1 回 |
-| `make init` | ツールのインストール（`aqua install`） | bootstrap 後、および DR 復旧時 |
+| `make bootstrap` | WSL レベルのセットアップ（Homebrew・aqua のインストール、`aqua install` によるツール取得、Docker daemon 設定、`.bashrc` への追記） | 新規 WSL 環境構築時に 1 回 |
+| `make init` | ツールの更新（`aqua install`） | aqua.yaml でバージョンを変更した後 |
 
-`make bootstrap` は aqua 本体のインストールと `.bashrc` への PATH・`AQUA_GLOBAL_CONFIG` 追記を行う。  
-`.bashrc` への追記はべき等に実装しており（`grep` で既存行を確認してから追記）、複数回実行しても重複しない。
+`make bootstrap` は以下を順に実行する。
+
+1. Homebrew・aqua のインストール
+2. `aqua install` — `aqua.yaml` に定義された全ツールをバージョン固定でインストール（Docker CLI / daemon binary 含む）
+3. Docker daemon の systemd サービス設定（`containerd.io` のみ APT で取得し、daemon binary は aqua が提供するものを使用）
+4. `.bashrc` への PATH・`AQUA_GLOBAL_CONFIG`・direnv フック追記（べき等）
+
+Docker のバージョン定義は `aqua.yaml` が唯一の source of truth であり、`bootstrap.sh` は APT で docker-ce を直接インストールしない。
 
 `make init` は `aqua install` のみを実行する薄いラッパーとしている。  
-ツール定義は `platform-infra/aqua.yaml` に集約されているため、このコマンド 1 つで全 PE ツールが揃う。
+`make bootstrap` 後の初回インストールはすでに完了しているため、バージョン変更後の更新用として使用する。
 
 ---
 

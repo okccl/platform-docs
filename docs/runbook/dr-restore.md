@@ -159,9 +159,8 @@ DB ユーザーパスワードの確認も実施すること（シナリオ A St
 
 - [ ] SSH 秘密鍵を復元済み（`~/.ssh/id_ed25519`）— GitHub クローンに必須
 - [ ] `platform-infra` を再クローン済み
-- [ ] `bash ~/platform-infra/scripts/bootstrap.sh` を実行済み — Docker Engine（daemon・グループ設定含む）・Homebrew・aqua のインストールと `.bashrc` 設定を一括処理する
+- [ ] `bash ~/platform-infra/scripts/bootstrap.sh` を実行済み — Homebrew・aqua のインストール、`aqua install`（kubectl / helm / k3d / docker 等）、Docker daemon 設定、`.bashrc` 追記を一括処理する
 - [ ] `source ~/.bashrc` 済み
-- [ ] `cd ~/platform-infra && aqua install` でツールを再インストール済み（kubectl / helm / k3d / docker CLI 等）
 - [ ] 全リポジトリを再クローン済み（`platform-gitops` / `apps-gitops` 等）
 - [ ] `~/.config/sops/age/keys.txt`（Age 秘密鍵）を復元済み — SOPS 復号に必須
 - [ ] `minio-external` Docker コンテナを再作成済み（空バケット）
