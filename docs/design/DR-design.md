@@ -51,9 +51,11 @@ CNPG の barman-cloud を使い、MinIO（WSL ローカル）に継続的バッ�
 
 ```
 CNPG Pod
-  → barman-cloud-wal-archive（WAL）  ─→ MinIO: s3://cnpg-backup/<cluster-name>/wals/
-  → barman-cloud-backup（ベース）    ─→ MinIO: s3://cnpg-backup/<cluster-name>/data/
+  → barman-cloud-wal-archive（WAL）  ─→ MinIO: s3://cnpg-backup/<cluster-name>/<server-name>/wals/
+  → barman-cloud-backup（ベース）    ─→ MinIO: s3://cnpg-backup/<cluster-name>/<server-name>/base/
 ```
+
+`<server-name>` は `spec.backup.barmanObjectStore.serverName`（未設定時はクラスター名と同一）。DR 後は日付サフィックス付きの別名になる（詳細は 3.1 節）。
 
 **接続設定**:
 - エンドポイント: `http://host.k3d.internal:9000`（k3d コンテナから WSL ホストへ）
@@ -66,7 +68,7 @@ MinIO 上のバックアップを GCS（us-central1）へ rclone で同期し、
 
 | 種別 | 内容 |
 |---|---|
-| 同期スクリプト | `k3d/scripts/backup-to-gcs.sh`（`rclone copy` で差分同期） |
+| 同期スクリプト | `scripts/backup-to-gcs.sh`（`rclone copy` で差分同期） |
 | スケジュール | 毎日 23:00（WSL cron）。CNPG ScheduledBackup（21:00）の 2 時間後 |
 | 保持期間 | GCS Object Lifecycle で 30 日（MinIO の 7 日と独立して管理） |
 | 失敗通知 | Discord Webhook（失敗時のみ通知） |
@@ -134,9 +136,7 @@ spec:
 PVC Retain ポリシーの主な用途は、クラスター全損（k3d 再作成）時に PVC が自動削除されないようにすることではない（k3d 全損では PVC もなくなる）。正確には以下の 2 つのケースでデータを保全する:
 
 1. **シナリオ A（PVC 破損リストア）**: 破損した PVC を手動削除して recovery でリストアする際、他の PVC（同一クラスターの別インスタンス）が Retain で保護される
-2. **誤操作による `kubectl delete cluster`**: クラスターを誤削除した際に PVC が残存し、ArgoCD が `initdb` で再作成した場合に CNPG が既存データを検知して initdb をスキップする
-
-**ただし (2) のケースには WAL アーカイブの問題がある**（後述「WAL アーカイブと bootstrap 方式の関係」参照）。
+2. **誤操作による `kubectl delete cluster`**: クラスターを誤削除した際に PVC が残存し、ArgoCD が gitops（`recovery`）からクラスターを再作成する際に CNPG が既存 PV データを検知して MinIO からの再取得なしに復帰する
 
 **実装済み**:
 - `local-path-retain` StorageClass（`reclaimPolicy: Retain`）を GitOps で管理（wave 0 で適用）

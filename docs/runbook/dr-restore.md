@@ -21,8 +21,8 @@ cd ~/platform-infra && make generate-dr-manifests
 ```
 
 スクリプトが以下を自動で書き換える:
-- `~/platform-gitops/platform/.../cluster.yaml` → `spec.bootstrap: recovery` に変更
-- `~/apps-gitops/apps/.../values.yaml` → `db.recovery.enabled: true` を追加
+- `~/platform-gitops/platform/.../cluster.yaml` → `spec.bootstrap: recovery` に変更、`spec.backup.barmanObjectStore.serverName` を `{cluster_name}-{YYYYMMDD}` に変更
+- `~/apps-gitops/apps/.../values.yaml` → `db.recovery.enabled: true` と `db.backup.serverName`（新規書き込み先）・`db.recovery.serverName`（旧バックアップ参照先）を追加
 
 変更内容を確認して commit + push する:
 
@@ -82,7 +82,7 @@ kubectl exec backstage-db-1 -n backstage -c postgres -- \
 
 gitops は recovery bootstrap のまま維持する（`git checkout` は不要）。
 
-`spec.bootstrap` は一度きりの初期化イベントであり、running クラスターの動作には影響しない。gitops が recovery を宣言したまま維持されることで、以後のクラスター再作成も MinIO から自動リストアされる。WAL アーカイブは recovery bootstrap のクラスターが "Expected empty archive" チェックをスキップするため、正常に継続される。
+`spec.bootstrap` は一度きりの初期化イベントであり、running クラスターの動作には影響しない。gitops が recovery を宣言したまま維持されることで、以後のクラスター再作成も MinIO から自動リストアされる。WAL アーカイブは `generate-dr-manifests` が `backup.serverName` を空の新規パスに向けているため、"Expected empty archive" エラーなく正常に継続される。
 
 ---
 
