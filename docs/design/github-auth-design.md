@@ -10,7 +10,7 @@ GitHub との連携には目的ごとに異なる認証方式を使用する。1
 |---|---|
 | **okccl-gitops GitHub App** | GHCR imagePullSecret（ESO 経由）・CI/CD 自動化 |
 | **Fine-grained PAT** | Backstage API アクセス・Scaffolder リポジトリ操作 |
-| **GitHub OAuth App** | Backstage ユーザーサインイン |
+| **GitHub OAuth App** | Backstage ユーザーサインイン（GitHub アカウント） |
 | **GITHUB_TOKEN（組み込み）** | apps-gitops PR 自動マージ |
 
 ---
@@ -35,15 +35,27 @@ GitHub との連携には目的ごとに異なる認証方式を使用する。1
 
 ### 2.3 秘密鍵の管理フロー
 
+秘密鍵は 1 本だが、クラスター内（ESO 経由・自動）と GitHub Actions（手動登録）の 2 経路で別々に使用する。
+
+**クラスター内（自動）: GHCR imagePullSecret 生成**
+
 ```
 gitops-github-app-source.yaml  (SOPS + Age 暗号化)
   └─ ESO ClusterSecretStore (kubernetes-store)
        └─ backstage-secret.GITHUB_APP_PRIVATE_KEY
-            ├─ ESO GithubAccessToken generator → ghcr-pull-secret (30min 更新)
-            └─ GitHub Actions secrets.GITOPS_APP_PRIVATE_KEY (手動登録)
+            └─ ESO GithubAccessToken generator → ghcr-pull-secret (30min 更新)
 ```
 
-秘密鍵は 1 本で ESO 経由（GHCR）と GitHub Actions 経由（CI/CD）の両方に使用する。
+**GitHub Actions（手動登録）: CI/CD トークン生成**
+
+```
+同じ秘密鍵を GitHub リポジトリに手動で登録
+  └─ secrets.GITOPS_APP_PRIVATE_KEY（platform-gitops / 各アプリリポジトリ）
+       └─ actions/create-github-app-token → App token
+            └─ apps-gitops への PR 作成・マージ / GHCR パッケージ削除
+```
+
+GitHub Actions secrets への登録は自動同期ではなく手動操作であり、秘密鍵をローテーションした場合は両経路を個別に更新する必要がある。
 
 ### 2.4 生成アプリリポジトリへの Client ID 配布
 
@@ -52,6 +64,18 @@ Scaffolder（`publish:github`）は新規リポジトリを作成する際に `r
 `GITOPS_APP_PRIVATE_KEY`（秘密鍵）は暗号化処理が必要なため Scaffolder での自動設定が困難であり、リポジトリ払い出し後に手動設定する運用とした。
 
 > **Organization 移行後**: Organization-level secrets により秘密鍵の自動配布が可能になる（「6. 個人アカウントの制約」参照）。
+
+### 2.5 GHCR と CI/CD を 1 つの App で兼用する理由
+
+GHCR imagePullSecret と CI/CD（update-gitops / teardown）を別々の GitHub App に分離する案も検討したが、1 つの App で兼用する構成を選んだ。
+
+| 観点 | 1 App 兼用（採用） | 2 App に分離 |
+|---|---|---|
+| 秘密鍵管理 | 1 本。SOPS ファイルと GitHub Actions secret のローテーション箇所が最小 | 2 本。SOPS ファイル・ESO 設定・GitHub Actions secret の変更箇所が倍になる |
+| 権限分離 | GHCR と CI/CD が同じ App token を共有 | 侵害時の影響範囲を GHCR / CI/CD に限定できる |
+| 運用コスト | 低い | GitHub App 設定・SOPS 暗号化ファイルが増える |
+
+ポートフォリオ環境として管理対象リポジトリが少なく、侵害リスクへの過剰な対処よりも運用のシンプルさを優先した。本番相当の環境では用途ごとに App を分離することを検討すべきである。
 
 ---
 
@@ -78,6 +102,15 @@ Backstage が GitHub API を直接呼び出す際に使用する。環境変数 
 | `Pull requests: Read & Write` | apps-gitops への PR 作成（`publish:github:pull-request`） |
 | `Actions: Read & Write` | teardown テンプレートの workflow dispatch（`github:actions:dispatch`） |
 
+**スコープに関するリスクと許容判断:**
+
+`Administration: Read & Write` は既存リポジトリへの管理者操作（チーム設定・ブランチ保護・Webhook 追加など）も可能な広いスコープである。Fine-grained PAT では新規リポジトリを事前に指定できないため、リポジトリ作成には「All repositories」スコープを付与せざるを得ない。
+
+このリスクを以下の理由で許容する:
+- PAT はリポジトリ所有者（`okccl` 個人アカウント）本人が発行しており、影響範囲は自分のリポジトリに限定される
+- PAT は Backstage pod 内にのみ保持され、外部公開されない
+- Organization に移行すれば GitHub App に切り替えることで不要になるスコープである
+
 ### 3.3 Scaffolder に GitHub App を使わない理由
 
 `integrations.github` に GitHub App（installation token）を設定すると、`publish:github` アクションでのリポジトリ作成が失敗する。
@@ -100,7 +133,7 @@ backstage-github-app-source.yaml  (SOPS + Age 暗号化、githubPat フィール
 
 ### 4.1 役割
 
-Backstage へのユーザーサインインに使用する。`auth.providers.github` に設定される。
+Backstage への GitHub アカウントによるユーザーサインインに使用する。`auth.providers.github` に設定される。
 
 | 項目 | 内容 |
 |---|---|
@@ -116,6 +149,17 @@ backstage-github-app-source.yaml  (SOPS + Age 暗号化)
        └─ ESO → backstage-secret.GITHUB_OAUTH_CLIENT_ID / GITHUB_OAUTH_CLIENT_SECRET
 ```
 
+### 4.3 Keycloak OIDC との併存
+
+Backstage には GitHub OAuth App と **Keycloak OIDC の 2 つの auth provider が同時に設定**されている。それぞれが異なるユーザー種別をカバーするため併存させている。
+
+| Provider | 対象ユーザー | 理由 |
+|---|---|---|
+| Keycloak OIDC | `platform-admin` / `app-developer`（Keycloak 管理アカウント） | 権限制御のデモ用に GitHub アカウントとは独立した Keycloak ユーザーとして管理 |
+| GitHub OAuth | `ccl`（GitHub アカウント） | 実際の開発者として GitHub 認証でサインインするケース |
+
+両 provider のサインインリゾルバーはいずれも `usernameMatchingUserEntityName` を使用する（GitHub ユーザー名または Keycloak ユーザー名と catalog の `User.metadata.name` を照合）。catalog に対応する `User` エンティティが存在しない場合はサインインに失敗するため、`backstage/org.yaml` への登録が必須となる。
+
 ---
 
 ## 5. GITHUB_TOKEN（GitHub Actions 組み込み）
@@ -126,7 +170,7 @@ apps-gitops の PR 自動マージにのみ使用する。カスタムトーク�
 |---|---|
 | `apps-gitops/.github/workflows/auto-merge-app-pr.yaml` | `app/*` ブランチの PR を自動 squash マージ |
 
-Scaffolder（PAT 経由）が作成した `app/<app-name>` ブランチ PR を検知して自動マージする。
+Scaffolder（PAT 経由）が作成した `app/<app-name>` ブランチ PR を検知して自動マージする。トリガー条件は `startsWith(github.head_ref, 'app/')` であり、この命名規則に一致する PR のみが対象となる。
 
 ---
 
