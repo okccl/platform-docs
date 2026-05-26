@@ -25,18 +25,26 @@ PostgreSQL（CNPG Pod）
                                                  ▼
                                   MinIO（minio-external コンテナ）
                                   s3://cnpg-backup/
-                                  ├── backstage-db/wals/
-                                  ├── backstage-db/data/
-                                  ├── keycloak-db/wals/
-                                  ├── keycloak-db/data/
-                                  ├── sample-backend-db/wals/
-                                  └── sample-backend-db/data/
+                                  ├── backstage-db/
+                                  │   └── backstage-db/        ← serverName（通常時 = cluster 名）
+                                  │       ├── base/            ← ベースバックアップ
+                                  │       └── wals/            ← WAL アーカイブ
+                                  ├── keycloak-db/
+                                  │   └── keycloak-db/
+                                  │       ├── base/
+                                  │       └── wals/
+                                  └── sample-backend-db/
+                                      └── sample-backend-db/
+                                          ├── base/
+                                          └── wals/
                                                  │
                                   rclone copy（毎日 23:00、WSL cron）
                                                  ▼
                                   GCS: gs://ccl-platform-cnpg-backup/
                                   （Object Lifecycle: 30 日後に自動削除）
 ```
+
+barman-cloud はバックアップを `{destinationPath}/{serverName}/` 以下に格納する。`serverName` は CNPG Cluster の `spec.backup.barmanObjectStore.serverName`（未設定時はクラスター名がデフォルト）。DR 実行後は `serverName` が `{cluster-name}-{YYYYMMDD}` に変わるため、MinIO 上に旧パスと新パスが共存する（詳細は DR 設計書 3.1 節参照）。
 
 ---
 
@@ -55,17 +63,19 @@ PostgreSQL（CNPG Pod）
 | WAL アーカイブ | PostgreSQL の Write-Ahead Log。変更をリアルタイムで転送 | 随時（CNPG が自動管理） |
 | ベースバックアップ | フルダンプ相当。WAL リプレイの起点となる | 毎日 21:00（ScheduledBackup） |
 
-ストレージクラスに `local-path-retain`（reclaimPolicy: Retain）を使用しているのは、MinIO 復元フロー中の切り戻し時に PV データを保全するためである。k3d クラスター全損（`k3d cluster delete`）では Docker ボリュームごと消えるため reclaimPolicy は関係ない。
+ストレージクラスに `local-path-retain`（reclaimPolicy: Retain）を使用しているのは、誤操作によるデータ消失を防ぐためである。k3d クラスター全損（`k3d cluster delete`）では Docker ボリュームごと消えるため reclaimPolicy は関係ない。
 
-Retain が必要な場面は、recovery クラスターを削除して ArgoCD の initdb クラスターに切り戻す際である。
+Retain が有効に機能する場面は、クラスターを誤削除した際の自動保護である。
 
 ```
-1. recovery クラスターを削除
-   ├─ [Retain あり] PV が Released 状態で残る → データ保全
-   └─ [Retain なし] PV ごと削除 → 復元データが消える
-2. ArgoCD の initdb クラスターが PVC を作成 → 既存 PV にバインド
-3. CNPG が PV 上のデータを検知 → bootstrap をスキップ → 通常運用に復帰
+1. kubectl delete cluster <name>（誤操作）
+   ├─ [Retain あり] PV が Released 状態で残る
+   └─ [Retain なし] PV ごと削除 → データ消失
+2. ArgoCD が gitops（recovery bootstrap）から即座にクラスターを再作成
+3. CNPG が PV 上の既存データを検知 → bootstrap をスキップ → 通常運用に復帰
 ```
+
+DR 後の設計では gitops は recovery bootstrap のまま維持するため、ArgoCD が再作成するクラスターは常に recovery bootstrap で起動する。recovery bootstrap が MinIO から自動リストアを試みるため、PV にデータが残っていれば MinIO からの不要な再取得なしに復帰できる。
 
 ---
 
@@ -89,6 +99,8 @@ WAL アーカイブの効果は「ベースバックアップ間のポイント�
 # barmanObjectStore（各 CNPG Cluster の spec.backup に設定）
 endpointURL: "http://host.k3d.internal:9000"
 destinationPath: "s3://cnpg-backup/<cluster-name>"
+serverName: "<cluster-name>"        # 通常時はクラスター名と同一
+                                    # DR 後は "{cluster-name}-{YYYYMMDD}" に変わる
 wal:
   compression: gzip
 data:
@@ -96,6 +108,8 @@ data:
 ```
 
 圧縮に gzip を採用しているのはストレージ使用量削減のため。CNPG がデフォルトでサポートしており追加実装コストがない。
+
+`serverName` は WAL アーカイブの書き込み先パスを決定する重要なパラメーターである。CNPG はクラスター起動時にこのパスが空であることを確認し（`barman-cloud-check-wal-archive`）、既存データがあると起動を拒否する。DR 時に `generate-dr-manifests` が `serverName` を `{cluster_name}-{YYYYMMDD}` に変更することで、書き込み先を空の新規パスに向けてこのチェックを回避する（詳細は DR 設計書 3.1 節参照）。
 
 ### 3.3 ベースバックアップ（ScheduledBackup）
 

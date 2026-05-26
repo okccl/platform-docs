@@ -107,6 +107,11 @@ make bootstrap
 cd ~/platform-infra && make generate-dr-manifests
 ```
 
+スクリプトが以下を書き換える:
+- `spec.bootstrap` → `recovery` に変更
+- `spec.externalClusters` → 旧バックアップの読み込み元を追加（`serverName` は現行の書き込み先パスを自動参照）
+- `spec.backup.barmanObjectStore.serverName` → `{cluster_name}-{YYYYMMDD}` に変更（書き込み先を空の新規パスに向ける）
+
 各 gitops リポジトリで commit + push する（シナリオ A の Step 1 と同様）。
 
 ### 3. 各クラスターをリストア
@@ -215,16 +220,24 @@ MinIO 上のデータが復元できたことを確認した後、**シナリオ
 
 ### WAL アーカイブが "Expected empty archive" で失敗する
 
-クラスターが `initdb` bootstrap で再作成され、MinIO に既存のバックアップデータがある場合に発生する。
-DR 後の GitOps 復元ステップでクラスターを削除・再作成した場合に起きる。
+**正規の DR 手順（`make generate-dr-manifests` → commit + push → `kubectl delete cluster`）を踏んだ場合、このエラーは発生しない。** スクリプトが `spec.backup.barmanObjectStore.serverName` を日付サフィックス付きの新規名に変更し、書き込み先を空パスに向けるためである。
 
-**対処**: MinIO バックアップデータをクリアしてから手動でベースバックアップを取得する。
+このエラーが発生するのは以下のケース：
+- `generate-dr-manifests` を使わずに CNPG Cluster を手動作成し、`backup.serverName` が既存 WAL のあるパスと一致している場合
+- 初回 `make bootstrap` 直後（MinIO が空でなく、かつ `initdb` で起動した場合）
+
+**対処（初回 bootstrap 後の MinIO データ不整合）**:
+
+MinIO の既存バックアップデータをクリアし、新しいベースバックアップを取り直す。これはバックアップデータを「現クラスター」に揃える操作であり、DR（バックアップからの復元）とは無関係。
 
 ```bash
-# MinIO データをクリア（警告: バックアップが消える）
+CLUSTER_NAME=keycloak-db
+NAMESPACE=keycloak
+
+# MinIO の既存データをクリア（警告: 旧バックアップが消える。DR が必要な場合は実行しないこと）
 docker exec minio-external mc rm --recursive --force local/cnpg-backup/${CLUSTER_NAME}/
 
-# WAL アーカイブ再開を確認後、手動バックアップをトリガー
+# WAL アーカイブが再開されたことを確認後、手動でベースバックアップをトリガー
 kubectl apply -f - <<EOF
 apiVersion: postgresql.cnpg.io/v1
 kind: Backup

@@ -151,29 +151,38 @@ DR マニフェストは静的ファイルとして管理せず、`make generate
 
 | スキャン対象 | 書き換え内容 |
 |---|---|
-| `platform-gitops/platform/**/*.yaml`（`kind: Cluster` + `barmanObjectStore`） | `spec.bootstrap` を `recovery` に変更・`externalClusters` を追加 |
-| `apps-gitops/apps/*/*/values.yaml`（`db.backup.enabled: true`） | `db.recovery.enabled: true` と接続設定を追加 |
+| `platform-gitops/platform/**/*.yaml`（`kind: Cluster` + `barmanObjectStore`） | `spec.bootstrap` を `recovery` に変更・`externalClusters` を追加・`spec.backup.barmanObjectStore.serverName` を `{cluster_name}-{YYYYMMDD}` に変更 |
+| `apps-gitops/apps/*/*/values.yaml`（`db.backup.enabled: true`） | `db.recovery.enabled: true` と接続設定を追加・`db.backup.serverName` を `{cluster_name}-{YYYYMMDD}` に変更・`db.recovery.serverName` を現行の書き込み先パス名に設定 |
+
+`externalClusters`（読み込み元）の `serverName` は、現在の `spec.backup.barmanObjectStore.serverName`（または未設定時はクラスター名）から動的に読み取る。これにより DR を複数回実行しても、前回 DR 後のバックアップを正しく参照できる。
 
 apps-gitops のクラスターは `common-db` Helm chart で管理されており、`db.recovery.enabled: true` を設定すると Helm が recovery bootstrap の CNPG Cluster マニフェストを生成する。
 
-新しいクラスターが追加されても手動メンテナンス不要。DR 後は gitops リポジトリで `git checkout -- .` して push するだけで元の `initdb` 設定に戻る（running クラスターは `ignoreDifferences` で保護されており無影響）。
+新しいクラスターが追加されても手動メンテナンス不要。
 
-#### WAL アーカイブと bootstrap 方式の関係（実測で判明した重要な制約）
+#### WAL アーカイブと書き込み先パスの関係（実測で判明した重要な制約）
 
-CNPG のバックアップ開始時に `barman-cloud-check-wal-archive` が実行される。このチェックは bootstrap 方式によって動作が異なる。
+CNPG はクラスター起動時に `barman-cloud-check-wal-archive` を実行し、**WAL の書き込み先パスが空であること**を確認する。このチェックは bootstrap 方式（`initdb` / `recovery`）に関係なく実行される。
 
-| bootstrap 方式 | WAL アーカイブ開始時の動作 |
-|---|---|
-| `initdb`（PVC が空でも既存でも） | `barman-cloud-check-wal-archive` を実行 → MinIO に既存データがあると "Expected empty archive" で失敗 |
-| `recovery` | `barman-cloud-check-wal-archive` をスキップ → 既存データがあっても WAL アーカイブ開始 |
+チェック対象のパスは `spec.backup.barmanObjectStore` の `destinationPath + serverName` で決まる。`serverName` が未設定の場合は CNPG がクラスター名をデフォルト値として使用する。
 
-この差異から以下の設計上の制約が生じる。
+```
+# serverName = "keycloak-db"（デフォルト）の場合
+チェック対象: s3://cnpg-backup/keycloak-db/keycloak-db/  ← 旧 WAL が存在 → 失敗
+```
 
-**DR 後にクラスターを `initdb` で再作成してはいけない**: MinIO に DR 以前のバックアップデータが残っているため WAL アーカイブが必ず失敗する。
+DR でクラスターを再作成すると、書き込み先パスに旧クラスターの WAL が残っているため、`serverName` を変えずに recovery を試みると "Expected empty archive" で失敗する。
 
-**現設計での解決**: DR 後も gitops は `recovery` bootstrap のまま維持する。ArgoCD が再作成するクラスターは常に `recovery` bootstrap で起動するため、この問題は原理的に発生しない。`recovery` bootstrap のクラスターは WAL アーカイブチェックをスキップするため、MinIO の既存データと共存できる。
+**現設計での解決**: `generate-dr-manifests` が `spec.backup.barmanObjectStore.serverName` を `{cluster_name}-{YYYYMMDD}` に変更することで、書き込み先を空の新規パスに向ける。
 
-**クラスターを誤削除した場合**: ArgoCD が gitops（`recovery`）から即座に再作成するため、MinIO にバックアップがある限り自動的にリストアされる。MinIO が空の場合（初回 bootstrap 時のみ）は WAL アーカイブが失敗するため、MinIO のバックアップデータをクリアしてから手動でベースバックアップをトリガーする（詳細は Runbook トラブルシュート節を参照）。
+```
+externalClusters.serverName = keycloak-db         → 旧バックアップから読む ✅
+backup.barmanObjectStore.serverName = keycloak-db-20260526  → 空パスに書く ✅
+```
+
+DR 後は書き込み先が変わるため、次回 DR 時は `externalClusters.serverName = keycloak-db-20260526` を参照する。スクリプトが現行の `serverName` を動的に読み取って設定するため、手動変更は不要。
+
+**クラスターを誤削除した場合**: ArgoCD が gitops（`recovery`）から即座に再作成する。`backup.serverName` は DR 時に設定した値のままなので、書き込み先は空パスを指しており WAL アーカイブチェックが通る。MinIO にバックアップがある限り自動的にリストアされる。MinIO が空の場合（初回 bootstrap 直後のみ）は Runbook トラブルシュート節を参照。
 
 ### 3.2 クラスター内障害（Pod / PV 障害）からの復旧
 
@@ -190,7 +199,7 @@ CNPG はほとんどの Pod 障害を自己修復する。手動介入が必要�
 
 Discord 通知（`CNPGWalArchivingFailing` / `CNPGLastBackupFailed` アラート）で障害を検知したら、ArgoCD GUI の CNPG Cluster リソースの `status.conditions` でフェーズを確認する。
 
-PVC 破損が発生した場合は MinIO バックアップからの手動リストアが必要。`make generate-dr-manifests` で gitops を recovery bootstrap に書き換えて push すると、ArgoCD が recovery bootstrap でクラスターを再作成する。リストア完了後は gitops を元の `initdb` に戻す（running クラスターは `ignoreDifferences` で保護されているため無影響）。DR 後にクラスターを `initdb` で再作成すると WAL アーカイブが壊れるため、クラスターの削除は行わないこと（3.1 節「WAL アーカイブと bootstrap 方式の関係」参照）。
+PVC 破損が発生した場合は MinIO バックアップからの手動リストアが必要。`make generate-dr-manifests` で gitops を recovery bootstrap に書き換えて push すると、ArgoCD が recovery bootstrap でクラスターを再作成する。リストア後は gitops を recovery bootstrap のまま維持する（3.1 節「WAL アーカイブと書き込み先パスの関係」参照）。
 
 > **詳細手順**: [Runbook: DB リストア手順 — シナリオ A](../runbook/dr-restore.md)
 
@@ -221,7 +230,7 @@ GCS に保存されているのは最終同期時刻（毎日 23:00）時点の�
 | `ignoreDifferences` 設定（`RespectIgnoreDifferences` なし） | **完了** | 3.1 節 |
 | PVC Retain ポリシー設定 | **完了**（`local-path-retain` SC + 既存 PV パッチ） | 3.1 節 |
 | DR マニフェスト生成スクリプト | **完了**（`make generate-dr-manifests`・GitOps 直接書き換え方式） | 3.1 節 |
-| `common-db` Helm chart recovery 対応 | **完了**（`db.recovery.enabled` values）| — |
+| `common-db` Helm chart recovery 対応 | **実装中**（`db.recovery.enabled` 完了・`db.backup.serverName` / `db.recovery.serverName` 対応中）| — |
 | クラウドバックアップ実装 | **完了**（`make backup-to-gcs`・毎日 23:00 cron） | 2.2 節 |
 | DR 手順書（Runbook）作成 | **完了** | `runbook/dr-restore.md` |
 | RTO/RPO 実測 | **完了**（シナリオ A: 31〜67 秒） | 1.3 節 |
