@@ -158,10 +158,12 @@ DB ユーザーパスワードの確認も実施すること（シナリオ A St
 以下を**この順序で**完了していることを確認する。
 
 - [ ] SSH 秘密鍵を復元済み（`~/.ssh/id_ed25519`）— GitHub クローンに必須
-- [ ] Docker Engine をインストール済み（`apt install docker-ce docker-ce-cli containerd.io`）— k3d・minio-external に必須。aqua は docker バイナリを管理するが、デーモンの systemd サービス設定は APT が担うため両方必要
-- [ ] 全リポジトリを再クローン済み（`platform-infra` / `platform-gitops` / `apps-gitops` 等）
+- [ ] `platform-infra` を再クローン済み
+- [ ] `bash ~/platform-infra/scripts/bootstrap.sh` を実行済み — Docker Engine（daemon・グループ設定含む）・Homebrew・aqua のインストールと `.bashrc` 設定を一括処理する
+- [ ] `source ~/.bashrc` 済み
+- [ ] `cd ~/platform-infra && aqua install` でツールを再インストール済み（kubectl / helm / k3d / docker CLI 等）
+- [ ] 全リポジトリを再クローン済み（`platform-gitops` / `apps-gitops` 等）
 - [ ] `~/.config/sops/age/keys.txt`（Age 秘密鍵）を復元済み — SOPS 復号に必須
-- [ ] `cd ~/platform-infra && aqua install` でツールを再インストール済み（docker/cli 含む）
 - [ ] `minio-external` Docker コンテナを再作成済み（空バケット）
 
 ### 2. GCS から MinIO へバックアップを復元
