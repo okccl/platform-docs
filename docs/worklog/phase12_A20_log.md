@@ -517,9 +517,25 @@ restore error: while restoring cluster: unexpected failure invoking barman-cloud
 
 `sample-backend-db` は `RespectIgnoreDifferences=true` を削除する前のコミットの影響で initdb のまま起動した。keycloak-db・backstage-db は recovery bootstrap が正しく適用されたが（第 13 節の修正が効いている）、MinIO の WAL チェックで失敗している。
 
-### 未解明
+### 根本原因（翌セッションで判明）
 
-シナリオ A（5/25 実施）では同条件（MinIO に旧 system ID の WAL あり）で recovery が成功している。シナリオ A は旧方式（kubectl apply + auto-sync 停止）で実施しており、今回の GitOps-first 方式との違いが原因かは不明。セッション継続時に調査する。
+CNPG 公式ドキュメント・Issue #6470 を調査し、原因が確定した。
+
+`barman-cloud-check-wal-archive` は bootstrap 方式（`initdb` / `recovery`）に関係なく、**`spec.backup.barmanObjectStore` の書き込み先パスが空かどうか**を確認する。`serverName` 未設定時はクラスター名がデフォルトになるため、書き込み先は `s3://cnpg-backup/keycloak-db/keycloak-db/`（旧 WAL あり）→ 失敗。
+
+### 対処方針
+
+`generate-dr-manifests` で `spec.backup.barmanObjectStore.serverName` を `{cluster_name}-{YYYYMMDD}` に変更し、書き込み先を空の新規パスに向ける。`externalClusters.serverName` は現行の `serverName`（または未設定時はクラスター名）から動的に読み取り、旧バックアップを正しく参照する。複数回 DR にも対応。
+
+```
+externalClusters.serverName = keycloak-db           → 旧バックアップから読む ✅
+backup.serverName            = keycloak-db-20260526  → 空パスに書く ✅
+```
+
+### 実施済み
+
+- DR-design.md・backup-design.md・dr-restore.md を新方針に合わせて修正・push 済み
+- `generate-dr-manifests.py`・`common-db` chart の実装修正は未着手（次タスク）
 
 ---
 
@@ -538,3 +554,6 @@ restore error: while restoring cluster: unexpected failure invoking barman-cloud
 | `platform-gitops/platform/applications/backstage-db.yaml` | `RespectIgnoreDifferences=true` を削除 |
 | `platform-gitops/backstage/templates/fullstack/.../application.yaml` | `RespectIgnoreDifferences=true` を削除（Scaffolder テンプレート） |
 | `apps-gitops/apps/sample/sample-backend/application.yaml` | `RespectIgnoreDifferences=true` を削除 |
+| `platform-docs/docs/design/DR-design.md` | WAL アーカイブ節を全面改訂（serverName 方式の解説）・MinIO パス図修正・スクリプトパス修正・PVC Retain 説明修正 |
+| `platform-docs/docs/design/backup-design.md` | MinIO パス構造図を barman-cloud 実際の構造に修正・serverName に関する注記追加・PVC Retain 説明を現設計に合わせて更新 |
+| `platform-docs/docs/runbook/dr-restore.md` | シナリオ B Step 2 に serverName 動作の説明を追加・シナリオ A Step 1・5 の誤記修正・トラブルシュート節を全面書き直し |
