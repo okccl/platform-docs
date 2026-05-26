@@ -17,7 +17,8 @@
 | 11 | bootstrap バグ発見②：ghcr-pull-secret の PAT 移行漏れ（okccl-gitops に packages:read 追加で解消） |
 | 12 | Makefile の user-apps-infra 待機条件バグ（ApplicationSet 対応） |
 | 13 | シナリオ B 第 1 回試行失敗：RespectIgnoreDifferences × SSA バグ（設計変更・実装修正） |
-| 14 | シナリオ B 第 2 回試行：barman-cloud-check-wal-archive "Expected empty archive" 失敗（調査中） |
+| 14 | シナリオ B 第 2 回試行：barman-cloud-check-wal-archive "Expected empty archive" 失敗（根本原因確定・ドキュメント修正） |
+| 15 | serverName 実装・シナリオ B 第 3 回試行（成功）・データ整合性確認・Keycloak 復旧 |
 
 ---
 
@@ -534,8 +535,69 @@ backup.serverName            = keycloak-db-20260526  → 空パスに書く ✅
 
 ### 実施済み
 
-- DR-design.md・backup-design.md・dr-restore.md を新方針に合わせて修正・push 済み
 - `generate-dr-manifests.py`・`common-db` chart の実装修正は未着手（次タスク）
+
+---
+
+## 15. serverName 実装・シナリオ B 第 3 回試行（成功）
+
+### 実装
+
+前セクションで特定した根本原因（`backup.barmanObjectStore.serverName` 未設定 → 旧 WAL ありパスへの書き込みチェック失敗）を修正した。
+
+**`platform-infra/scripts/generate-dr-manifests.py`**
+
+- `make_platform_recovery_doc()`: 現行の `backup.serverName`（未設定時はクラスター名）を `externalClusters.serverName` に引き継ぎ、`backup.serverName` を `{cluster_name}-{YYYYMMDD}` に変更
+- `insert_recovery_into_values_file()`: `recovery` 設定済みの場合も `serverName` 追加/更新に対応
+- `_set_serverName_in_block()` ヘルパー追加（初回追加・多段 DR 置換の両対応）
+- 末尾の手順メッセージから「DR 後 git checkout で initdb に戻す」を削除
+
+**`platform-charts/charts/common-db/templates/_helpers.tpl`**
+
+- `externalClusters[].barmanObjectStore.serverName`: `db.recovery.serverName | default db.name`
+- `backup.barmanObjectStore.serverName`: `db.backup.serverName | default db.name`
+
+**`platform-charts/charts/common-db/values.yaml`**
+
+- `recovery.serverName: ""`・`backup.serverName: ""` デフォルト値追加（空 = db.name フォールバック）
+
+### シナリオ B 第 3 回試行（成功）
+
+`make generate-dr-manifests` → commit + push → `kubectl delete cluster` × 3 を実施。今回は全クラスターが recovery bootstrap を通過した。
+
+```
+keycloak-db      Cluster in healthy state ✅
+backstage-db     Cluster in healthy state ✅
+sample-backend-db Cluster in healthy state ✅
+```
+
+WAL アーカイブも `s3://cnpg-backup/keycloak-db/keycloak-db-20260526/` パスに正常書き込みを確認。`barman-cloud-check-wal-archive` のエラーは消えた。
+
+### データ整合性確認
+
+**backstage-db**: recovery 後に `password authentication failed for user "app"` → ランブック Section 4 のパスワード修正を実施（`ALTER ROLE app WITH PASSWORD ...`）。
+
+**keycloak-db / backstage-db のスキーマ未初期化**:
+
+リストア後、両 DB にアプリケーションスキーマが存在しなかった（`backstage_plugin_catalog` なし、Keycloak テーブル 0 件）。原因はバックアップ品質の問題：
+
+- シナリオ B の `make bootstrap` 後、keycloak-db・backstage-db が `barman-cloud-check-wal-archive` の crash loop で起動できていなかった
+- その状態で取得されたバックアップには、アプリケーションが初期化する前の空 DB が含まれていた
+- DR 機構自体は正しく動作しており、バックアップにあるデータは正しく復元された
+
+**対処**:
+
+- Backstage Pod を `rollout restart` → 再起動時に `backstage_plugin_catalog` 等を自動作成
+- Keycloak Pod を `rollout restart` → Liquibase マイグレーションで 90 テーブルを作成
+
+### Keycloak 復旧
+
+`keycloak-config-cli` ArgoCD Application が PostSync で Job を自動実行し、`platform` レルム・クライアント（`argocd`・`backstage`）・ユーザー（`platform-admin`・`app-developer`）を IaC から全復旧した。手動操作なし。
+
+```sql
+SELECT id, name FROM realm;
+-- platform | master  ✅
+```
 
 ---
 
@@ -554,6 +616,6 @@ backup.serverName            = keycloak-db-20260526  → 空パスに書く ✅
 | `platform-gitops/platform/applications/backstage-db.yaml` | `RespectIgnoreDifferences=true` を削除 |
 | `platform-gitops/backstage/templates/fullstack/.../application.yaml` | `RespectIgnoreDifferences=true` を削除（Scaffolder テンプレート） |
 | `apps-gitops/apps/sample/sample-backend/application.yaml` | `RespectIgnoreDifferences=true` を削除 |
-| `platform-docs/docs/design/DR-design.md` | WAL アーカイブ節を全面改訂（serverName 方式の解説）・MinIO パス図修正・スクリプトパス修正・PVC Retain 説明修正 |
-| `platform-docs/docs/design/backup-design.md` | MinIO パス構造図を barman-cloud 実際の構造に修正・serverName に関する注記追加・PVC Retain 説明を現設計に合わせて更新 |
-| `platform-docs/docs/runbook/dr-restore.md` | シナリオ B Step 2 に serverName 動作の説明を追加・シナリオ A Step 1・5 の誤記修正・トラブルシュート節を全面書き直し |
+| `platform-infra/scripts/generate-dr-manifests.py` | serverName 対応追加（`_set_serverName_in_block` ヘルパー・多段 DR 置換・手順メッセージ修正） |
+| `platform-charts/charts/common-db/templates/_helpers.tpl` | `externalClusters.serverName`・`backup.serverName` フィールド追加（`| default db.name` フォールバック） |
+| `platform-charts/charts/common-db/values.yaml` | `recovery.serverName: ""`・`backup.serverName: ""` デフォルト値追加 |
