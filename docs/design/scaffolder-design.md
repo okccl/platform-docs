@@ -146,6 +146,8 @@ packages:
 
 ## 5. GitHub 統合設計
 
+GitHub 認証・認可の全体設計（認証手段の比較・秘密鍵管理フロー・個人アカウントの制約と将来方針）は [`github-auth-design.md`](github-auth-design.md) にまとめている。本章では Scaffolder の動作に直接関わる部分のみを記述する。
+
 ### 5.1 認証方式の分離
 
 Backstage の GitHub 連携は用途ごとに異なる認証方式を使用する。
@@ -155,50 +157,17 @@ Backstage の GitHub 連携は用途ごとに異なる認証方式を使用す�
 | ユーザーログイン | GitHub OAuth App | `auth.providers.github` |
 | API アクセス（カタログ読み取り・Scaffolder） | Fine-grained PAT | `integrations.github.token` |
 
-### 5.2 Scaffolder に GitHub App を使わない理由
+Scaffolder（`publish:github`）に GitHub App を使用しない理由は、個人アカウントへのリポジトリ作成（`POST /user/repos`）が installation token では呼び出せないためである（詳細は `github-auth-design.md` 3.3 節参照）。
 
-`integrations.github` に GitHub App（installation token）を使用すると、`publish:github` アクションでのリポジトリ作成が失敗する。
+### 5.2 新規リポジトリへの CI credentials 配布
 
-**原因:** GitHub App の installation token（server-to-server）は `POST /user/repos` エンドポイントを呼び出せない。このエンドポイントはパーソナルアカウント配下のリポジトリを作成する際に使用されるが、installation token の権限スコープ外となっている。Organization アカウントであれば `POST /orgs/{org}/repos` が使用されるため問題ないが、`okccl` はパーソナルアカウントであるためこの制約に該当する。
+`publish:github` の `repoVariables` パラメータを使い、リポジトリ作成と同時に `GITOPS_APP_CLIENT_ID`（非機密の App Client ID）を自動設定する。`GITOPS_APP_PRIVATE_KEY`（秘密鍵）は Scaffolder での自動配布が困難なため、リポジトリ払い出し後に手動設定する運用とした。
 
-**対処:** `integrations.github` は Fine-grained PAT に切り替え、GitHub App は OAuth ログイン専用とする。Fine-grained PAT は以下の権限のみに限定し、最小権限の原則を維持する。
+個人アカウントのため Organization-level secrets が使えないことが根本原因であり、Organization に移行すれば秘密鍵の自動継承が可能になる（詳細は `github-auth-design.md` 6.1 節参照）。
 
-| Permission | 用途 |
-|---|---|
-| `Administration: Read & Write` | リポジトリ作成（`publish:github`） |
-| `Contents: Read & Write` | コードプッシュ・カタログ読み取り |
-| `Workflows: Read & Write` | `.github/workflows/` ファイルのプッシュ |
-| `Pull requests: Read & Write` | apps-gitops への PR 作成（`publish:github:pull-request`） |
-| `Actions: Read & Write` | teardown テンプレートの workflow dispatch（`github:actions:dispatch`） |
+### 5.3 teardown とリポジトリ削除
 
-> **将来的な移行:** `okccl` を GitHub Organization に変換した場合は GitHub App に戻すことができる。
-
-### 5.3 GitHub 認証の制約と将来方針
-
-本プロジェクトで発生している GitHub 認証まわりの制約を整理する。制約の性質によって将来の解消見込みが異なる。
-
-#### Organization 移行で解消される制約
-
-本プロジェクトでは諸事情により個人アカウント（`okccl`）を使用する必要があり、以下の制約が生じている。
-
-| 制約 | 影響 | 現在の対処 |
-|---|---|---|
-| GitHub App installation token が `POST /user/repos` を呼べない | Scaffolder でのリポジトリ作成が失敗する | Fine-grained PAT に切り替え（5.2 参照） |
-| Organization-level secrets が使えない | Scaffolder が新規作成したリポジトリに CI 用の credentials を自動配布できない | Variable は `publish:github` の `repoVariables` で自動設定。Secret（`GITOPS_APP_PRIVATE_KEY`）は初回のみ手動設定 |
-
-`publish:github` アクションは `repoVariables` パラメータをサポートしており、リポジトリ作成と同時に GitHub Actions Variables を設定できる。これを利用して `GITOPS_APP_CLIENT_ID`（非機密の App Client ID）は Scaffolder が自動設定する。一方 `GITOPS_APP_PRIVATE_KEY`（秘密鍵）は暗号化処理が必要なため自動設定が困難であり、払い出し後に手動設定する運用とした。
-
-**将来方針:** `okccl` を GitHub Organization に移行することで両制約が解消される。Organization では `POST /orgs/{org}/repos` が使用可能なため GitHub App に戻せる。また Organization-level secrets により新規リポジトリへの secrets 自動継承が可能になる。
-
-#### Organization 移行では解消されない制約
-
-| 制約 | 影響 | 現在の対処 |
-|---|---|---|
-| GitHub App installation token で `delete_repo` スコープを取得できない | teardown ワークフローからリポジトリを自動削除できない | ワークフロー完了後に手動削除 |
-
-`DELETE /repos/{owner}/{repo}` は GitHub API の仕様として `delete_repo` スコープを要求する。このスコープは GitHub App の permission model（`Administration: R/W` 等）とは独立した OAuth スコープであり、**アカウント種別（個人・Organization）に関わらず** GitHub App installation token では取得できない。PAT であれば `delete_repo` スコープを付与できるが、teardown はワークフロー内の自動処理であるため不特定のリポジトリを削除できる PAT を CI に持たせることはセキュリティ上リスクが高い。
-
-teardown ワークフローはリポジトリ削除の代わりに削除コマンドをログに出力するため、実行者が手動で削除する運用とした。
+GitHub API の制約（`delete_repo` スコープは App installation token では取得不可・アカウント種別に依存しない）により、teardown ワークフローはリポジトリ削除を自動化できない。ワークフロー完了後に手動削除する運用とした（詳細は `github-auth-design.md` 6.2 節参照）。
 
 ```bash
 gh repo delete okccl/<app-name>-backend --yes
