@@ -195,48 +195,8 @@ bootstrap.sh が自動で実施すること:
 
 ### 3. GCS から MinIO へバックアップを復元
 
-`backup-to-gcs.sh` の逆方向。SOPS から認証情報を復号し rclone で GCS → MinIO へコピーする。
-
 ```bash
-SOPS_AGE_KEY_FILE="${HOME}/.config/sops/age/keys.txt"
-WORK_DIR=$(mktemp -d)
-trap "rm -rf ${WORK_DIR}" EXIT
-
-# MinIO 認証情報を SOPS から復号
-MINIO_SECRET_YAML=$(SOPS_AGE_KEY_FILE="${SOPS_AGE_KEY_FILE}" sops decrypt \
-  "${HOME}/platform-gitops/platform/secrets/sources/minio-backup-secret-source.yaml")
-ACCESS_KEY_ID=$(echo "${MINIO_SECRET_YAML}" | python3 -c \
-  "import sys, yaml; d=yaml.safe_load(sys.stdin); print(d['stringData']['ACCESS_KEY_ID'])")
-ACCESS_SECRET_KEY=$(echo "${MINIO_SECRET_YAML}" | python3 -c \
-  "import sys, yaml; d=yaml.safe_load(sys.stdin); print(d['stringData']['ACCESS_SECRET_KEY'])")
-
-# GCP SA キーを SOPS から復号
-SOPS_AGE_KEY_FILE="${SOPS_AGE_KEY_FILE}" sops decrypt \
-  "${HOME}/platform-infra/secrets/gcp-backup-sa-key.enc.json" > "${WORK_DIR}/gcp-sa-key.json"
-
-# rclone 設定を生成
-cat > "${WORK_DIR}/rclone.conf" <<EOF
-[gcs]
-type = google cloud storage
-service_account_file = ${WORK_DIR}/gcp-sa-key.json
-bucket_policy_only = true
-
-[minio]
-type = s3
-provider = Minio
-endpoint = http://localhost:9000
-access_key_id = ${ACCESS_KEY_ID}
-secret_access_key = ${ACCESS_SECRET_KEY}
-no_check_bucket = true
-EOF
-
-# GCS から MinIO へコピー
-rclone copy \
-  --config "${WORK_DIR}/rclone.conf" \
-  --transfers 4 \
-  --progress \
-  "gcs:ccl-platform-cnpg-backup" \
-  "minio:cnpg-backup"
+cd ~/platform-infra && make restore-from-gcs
 ```
 
 > **RPO**: 復元されるデータは最終 GCS 同期時刻（前日 23:00）のスナップショット。WAL は含まれないため、それ以降の変更は復元不可。GCS Object Lifecycle（30 日保持）の範囲内であれば古い時点のバックアップへの復元も可能。
