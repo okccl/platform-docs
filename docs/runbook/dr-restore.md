@@ -153,19 +153,80 @@ DB ユーザーパスワードの確認も実施すること（シナリオ A St
 
 **前提**: WSL の再インストール・環境再構築後。GCS バケット `ccl-platform-cnpg-backup` にバックアップが存在する。
 
-### 1. 環境の前提を確認
+### 1. SSH 秘密鍵の復元
 
-以下を**この順序で**完了していることを確認する。
+```bash
+mkdir -p ~/.ssh
+# パスワードマネージャーから秘密鍵の内容をコピーして貼り付け
+cat > ~/.ssh/id_ed25519 << 'EOF'
+（ここに秘密鍵の内容を貼り付け）
+EOF
+chmod 600 ~/.ssh/id_ed25519
 
-- [ ] SSH 秘密鍵を復元済み（`~/.ssh/id_ed25519`）— GitHub クローンに必須
-- [ ] `platform-infra` を再クローン済み
-- [ ] `bash ~/platform-infra/scripts/bootstrap.sh` を実行済み — Homebrew・aqua のインストール、`aqua install`（kubectl / helm / k3d / docker 等）、Docker daemon 設定、`.bashrc` 追記を一括処理する
-- [ ] `source ~/.bashrc` 済み
-- [ ] 全リポジトリを再クローン済み（`platform-gitops` / `apps-gitops` 等）
-- [ ] `~/.config/sops/age/keys.txt`（Age 秘密鍵）を復元済み — SOPS 復号に必須
-- [ ] `minio-external` Docker コンテナを再作成済み（空バケット）
+# GitHub への接続確認
+ssh -T git@github.com
+# "Hi okccl! You've successfully authenticated..." と表示されれば OK
+```
 
-### 2. GCS から MinIO へバックアップを復元
+### 2. platform-infra のクローンと環境構築
+
+```bash
+git clone git@github.com:okccl/platform-infra.git ~/platform-infra
+bash ~/platform-infra/scripts/bootstrap.sh
+source ~/.bashrc
+```
+
+bootstrap.sh が実施すること: apt パッケージ・Homebrew・aqua のインストール、`aqua install`（kubectl / helm / k3d / docker 等）、Docker daemon 設定、`.bashrc` 追記。
+
+### 3. 全リポジトリのクローン
+
+```bash
+git clone git@github.com:okccl/platform-gitops.git ~/platform-gitops
+git clone git@github.com:okccl/apps-gitops.git ~/apps-gitops
+git clone git@github.com:okccl/platform-docs.git ~/platform-docs
+git clone git@github.com:okccl/platform-charts.git ~/platform-charts
+git clone git@github.com:okccl/sample-backend.git ~/sample-backend
+git clone git@github.com:okccl/sample-frontend.git ~/sample-frontend
+git clone git@github.com:okccl/backstage.git ~/backstage
+git clone git@github.com:okccl/internal.git ~/internal
+```
+
+### 4. Age 秘密鍵の復元
+
+```bash
+mkdir -p ~/.config/sops/age
+# パスワードマネージャーから Age 秘密鍵の内容をコピーして貼り付け
+cat > ~/.config/sops/age/keys.txt << 'EOF'
+（ここに Age 秘密鍵の内容を貼り付け）
+EOF
+chmod 600 ~/.config/sops/age/keys.txt
+```
+
+### 5. minio-external コンテナの再作成（空バケット）
+
+```bash
+mkdir -p ~/minio-data
+docker run -d \
+  --name minio-external \
+  --restart unless-stopped \
+  -p 9000:9000 -p 9001:9001 \
+  -v ~/minio-data:/data \
+  -e MINIO_ROOT_USER=minioadmin \
+  -e MINIO_ROOT_PASSWORD=minioadmin123 \
+  quay.io/minio/minio:latest \
+  server /data --console-address ":9001"
+
+# 起動待機後、バケットを作成
+sleep 3
+docker exec minio-external /usr/bin/mc alias set local http://localhost:9000 minioadmin minioadmin123
+docker exec minio-external /usr/bin/mc mb local/cnpg-backup
+```
+
+### 6. Claude Code のセットアップ
+
+`~/internal/claude/memo/claude-code-setup.md` の「WSL全損後のゼロからセットアップ」手順を実行する。
+
+### 7. GCS から MinIO へバックアップを復元
 
 `backup-to-gcs.sh` の逆方向。SOPS から認証情報を復号し rclone で GCS → MinIO へコピーする。
 
