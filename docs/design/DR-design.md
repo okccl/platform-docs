@@ -22,7 +22,7 @@
 | シナリオ | RPO | RTO（目標） | RTO（実測） |
 |---|---|---|---|
 | Pod / PV 障害 | WAL ラグ分（数十秒以内） | 数分 | — |
-| クラスター全損 | 最終 ScheduledBackup 時刻（毎日 02:00） | 1 時間以内 | **31〜67 秒**（シナリオ A 実測） |
+| クラスター全損 | 最終 ScheduledBackup 時刻（毎日 02:00） | 1 時間以内 | **22 分**（シナリオ B 実測） |
 | WSL 全損 | 最終 GCS 同期時刻（前日 23:00） | 数時間 | 未計測 |
 
 **シナリオ A（PVC 破損リストア）実測値 — 2026-05-26**
@@ -221,16 +221,3 @@ GCS に保存されているのは最終同期時刻（毎日 23:00）時点の�
 
 > **詳細手順**: [Runbook: DB リストア手順 — シナリオ C](../runbook/dr-restore.md)
 
----
-
-## 4. 実装状況
-
-| 項目 | 状態 | 参照 |
-|---|---|---|
-| `ignoreDifferences` 設定（`RespectIgnoreDifferences` なし） | **完了** | 3.1 節 |
-| PVC Retain ポリシー設定 | **完了**（`local-path-retain` SC + 既存 PV パッチ） | 3.1 節 |
-| DR マニフェスト生成スクリプト | **完了**（`make generate-dr-manifests`・GitOps 直接書き換え方式） | 3.1 節 |
-| `common-db` Helm chart recovery 対応 | **完了**（`db.recovery.enabled` / `db.backup.serverName` / `db.recovery.serverName` 対応済み）| — |
-| クラウドバックアップ実装 | **完了**（`make backup-to-gcs`・毎日 23:00 cron） | 2.2 節 |
-| DR 手順書（Runbook）作成 | **完了** | `runbook/dr-restore.md` |
-| RTO/RPO 実測 | **完了**（シナリオ A: 31〜67 秒） | 1.3 節 |
