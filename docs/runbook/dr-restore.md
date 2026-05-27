@@ -168,67 +168,27 @@ ssh -T git@github.com
 # "Hi okccl! You've successfully authenticated..." と表示されれば OK
 ```
 
-### 2. git のインストールと platform-infra のクローン
+### 2. 環境構築（bootstrap.sh）
 
 WSL のデフォルト環境には git が入っていないため、まず手動でインストールする。
 
 ```bash
 sudo apt-get update && sudo apt-get install -y git
-```
-
-```bash
 git clone git@github.com:okccl/platform-infra.git ~/platform-infra
 bash ~/platform-infra/scripts/bootstrap.sh
 source ~/.bashrc
 ```
 
-bootstrap.sh が実施すること: apt パッケージ・Homebrew・aqua のインストール、`aqua install`（kubectl / helm / k3d / docker 等）、Docker daemon 設定、`.bashrc` 追記。
+bootstrap.sh が自動で実施すること:
+- apt パッケージ・Homebrew・aqua のインストール
+- `aqua install`（kubectl / helm / k3d / docker 等）
+- Docker daemon の設定・起動
+- `.bashrc` 追記
+- 全リポジトリのクローン（既存はスキップ）
+- Age 秘密鍵の配置（対話式プロンプト）
+- `minio-external` コンテナの作成・バケット初期化（既存はスキップ）
 
-### 3. 全リポジトリのクローン
-
-```bash
-git clone git@github.com:okccl/platform-gitops.git ~/platform-gitops
-git clone git@github.com:okccl/apps-gitops.git ~/apps-gitops
-git clone git@github.com:okccl/platform-docs.git ~/platform-docs
-git clone git@github.com:okccl/platform-charts.git ~/platform-charts
-git clone git@github.com:okccl/sample-backend.git ~/sample-backend
-git clone git@github.com:okccl/sample-frontend.git ~/sample-frontend
-git clone git@github.com:okccl/backstage.git ~/backstage
-git clone git@github.com:okccl/internal.git ~/internal
-```
-
-### 4. Age 秘密鍵の復元
-
-```bash
-mkdir -p ~/.config/sops/age
-# パスワードマネージャーから Age 秘密鍵の内容をコピーして貼り付け
-cat > ~/.config/sops/age/keys.txt << 'EOF'
-（ここに Age 秘密鍵の内容を貼り付け）
-EOF
-chmod 600 ~/.config/sops/age/keys.txt
-```
-
-### 5. minio-external コンテナの再作成（空バケット）
-
-```bash
-mkdir -p ~/minio-data
-docker run -d \
-  --name minio-external \
-  --restart unless-stopped \
-  -p 9000:9000 -p 9001:9001 \
-  -v ~/minio-data:/data \
-  -e MINIO_ROOT_USER=minioadmin \
-  -e MINIO_ROOT_PASSWORD=minioadmin123 \
-  quay.io/minio/minio:latest \
-  server /data --console-address ":9001"
-
-# 起動待機後、バケットを作成
-sleep 3
-docker exec minio-external /usr/bin/mc alias set local http://localhost:9000 minioadmin minioadmin123
-docker exec minio-external /usr/bin/mc mb local/cnpg-backup
-```
-
-### 6. GCS から MinIO へバックアップを復元
+### 3. GCS から MinIO へバックアップを復元
 
 `backup-to-gcs.sh` の逆方向。SOPS から認証情報を復号し rclone で GCS → MinIO へコピーする。
 
@@ -276,7 +236,7 @@ rclone copy \
 
 > **RPO**: 復元されるデータは最終 GCS 同期時刻（前日 23:00）のスナップショット。WAL は含まれないため、それ以降の変更は復元不可。GCS Object Lifecycle（30 日保持）の範囲内であれば古い時点のバックアップへの復元も可能。
 
-### 7. シナリオ B を実行
+### 4. シナリオ B を実行
 
 MinIO 上のデータが復元できたことを確認した後、**シナリオ B: クラスター全損リストア** を実行する。
 
