@@ -116,24 +116,21 @@ cd ~/platform-infra && make generate-dr-manifests
 
 ### 3. 各クラスターをリストア
 
-`keycloak-db` / `backstage-db` と、`db.backup.enabled: true` なユーザーアプリのクラスターが対象。
-各クラスターに対して以下を実行する。
+> **重要**: ArgoCD の `ignoreDifferences` により `spec.bootstrap` / `spec.externalClusters` は既存クラスターには適用されない。必ず **全対象クラスターを delete して再作成させる**こと。
+
+`make generate-dr-manifests` の出力末尾に、対象クラスターの `kubectl delete` コマンドが自動生成されている。そのコマンドをそのまま実行すること。
 
 ```bash
-CLUSTER_NAME=keycloak-db
-NAMESPACE=keycloak
+# make generate-dr-manifests の出力に表示されたコマンドを実行する（例）:
+kubectl delete cluster keycloak-db -n keycloak
+kubectl delete cluster backstage-db -n backstage
+kubectl delete cluster sample-backend-db -n sample-app
+# ※ PVC は k3d 再作成で消えているため削除不要
 
-# initdb クラスターを削除（ArgoCD が recovery bootstrap で自動再作成する）
-kubectl delete cluster ${CLUSTER_NAME} -n ${NAMESPACE}
-# PVC は k3d 再作成で消えているため削除不要
-
-# リストア完了を待機
-kubectl get cluster ${CLUSTER_NAME} -n ${NAMESPACE} -w
-# "Cluster in healthy state" になれば完了
+# 全クラスターのリストア完了を待機
+kubectl get cluster -A -w
+# 全クラスターが "Cluster in healthy state" になれば完了
 ```
-
-`backstage-db`（`CLUSTER_NAME=backstage-db NAMESPACE=backstage`）、
-ユーザーアプリのクラスターも同様に実行する。
 
 ### 4. データ整合性を確認
 
