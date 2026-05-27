@@ -168,7 +168,13 @@ ssh -T git@github.com
 # "Hi okccl! You've successfully authenticated..." と表示されれば OK
 ```
 
-### 2. platform-infra のクローンと環境構築
+### 2. git のインストールと platform-infra のクローン
+
+WSL のデフォルト環境には git が入っていないため、まず手動でインストールする。
+
+```bash
+sudo apt-get update && sudo apt-get install -y git
+```
 
 ```bash
 git clone git@github.com:okccl/platform-infra.git ~/platform-infra
