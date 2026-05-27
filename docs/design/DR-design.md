@@ -230,7 +230,7 @@ GCS に保存されているのは最終同期時刻（毎日 23:00）時点の�
 | `ignoreDifferences` 設定（`RespectIgnoreDifferences` なし） | **完了** | 3.1 節 |
 | PVC Retain ポリシー設定 | **完了**（`local-path-retain` SC + 既存 PV パッチ） | 3.1 節 |
 | DR マニフェスト生成スクリプト | **完了**（`make generate-dr-manifests`・GitOps 直接書き換え方式） | 3.1 節 |
-| `common-db` Helm chart recovery 対応 | **実装中**（`db.recovery.enabled` 完了・`db.backup.serverName` / `db.recovery.serverName` 対応中）| — |
+| `common-db` Helm chart recovery 対応 | **完了**（`db.recovery.enabled` / `db.backup.serverName` / `db.recovery.serverName` 対応済み）| — |
 | クラウドバックアップ実装 | **完了**（`make backup-to-gcs`・毎日 23:00 cron） | 2.2 節 |
 | DR 手順書（Runbook）作成 | **完了** | `runbook/dr-restore.md` |
 | RTO/RPO 実測 | **完了**（シナリオ A: 31〜67 秒） | 1.3 節 |

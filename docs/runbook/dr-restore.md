@@ -228,11 +228,7 @@ docker exec minio-external /usr/bin/mc alias set local http://localhost:9000 min
 docker exec minio-external /usr/bin/mc mb local/cnpg-backup
 ```
 
-### 6. Claude Code のセットアップ
-
-`~/internal/claude/memo/claude-code-setup.md` の「WSL全損後のゼロからセットアップ」手順を実行する。
-
-### 7. GCS から MinIO へバックアップを復元
+### 6. GCS から MinIO へバックアップを復元
 
 `backup-to-gcs.sh` の逆方向。SOPS から認証情報を復号し rclone で GCS → MinIO へコピーする。
 
@@ -280,7 +276,7 @@ rclone copy \
 
 > **RPO**: 復元されるデータは最終 GCS 同期時刻（前日 23:00）のスナップショット。WAL は含まれないため、それ以降の変更は復元不可。GCS Object Lifecycle（30 日保持）の範囲内であれば古い時点のバックアップへの復元も可能。
 
-### 3. シナリオ B を実行
+### 7. シナリオ B を実行
 
 MinIO 上のデータが復元できたことを確認した後、**シナリオ B: クラスター全損リストア** を実行する。
 
