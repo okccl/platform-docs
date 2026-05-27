@@ -23,7 +23,7 @@
 |---|---|---|---|
 | Pod / PV 障害 | WAL ラグ分（数十秒以内） | 数分 | — |
 | クラスター全損 | 最終 ScheduledBackup 時刻（毎日 02:00） | 1 時間以内 | **22 分**（シナリオ B 実測） |
-| WSL 全損 | 最終 GCS 同期時刻（前日 23:00） | 数時間 | 未計測 |
+| WSL 全損 | 最終 GCS 同期時刻（前日 23:00） | 数時間 | **85 分**（シナリオ C 実測） |
 
 **シナリオ A（PVC 破損リストア）実測値 — 2026-05-26**
 
@@ -34,6 +34,16 @@
 | sample-backend-db（2 インスタンス） | **67 秒** | 2026-05-11 20:02 UTC |
 
 > 実測は k3d ローカル環境（WSL2）での計測。`kubectl apply` から "Cluster in healthy state" までの時間。
+
+**シナリオ C（WSL 全損リストア）実測値 — 2026-05-27**
+
+| 項目 | 実測 |
+|---|---|
+| RTO（bootstrap 開始〜全 App Healthy） | **85 分** |
+| RPO（MinIO バックアップ基準） | 前日 ScheduledBackup（02:00）相当 |
+
+> シナリオ C のうち GCS → MinIO 転送（`make restore-from-gcs`）は今回 MinIO データが残存していたためスキップ。GCS 転送込みの RTO は計測していない。
+> 今回の実測には platform-charts の Helm 依存 tgz 未コミット・serverName 設定ミスのデバッグ時間を含む。バグ修正済みのため次回以降は短縮見込み。
 
 ---
 

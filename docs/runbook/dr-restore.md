@@ -239,6 +239,34 @@ spec:
 EOF
 ```
 
+### アプリが DB に接続できない（password authentication failed）
+
+recovery bootstrap はデータベースをバックアップ時点の状態で復元する。バックアップ取得後に Kubernetes Secret（ExternalSecret）のパスワードが変更された場合、DB ロールのパスワードと Secret の値がズレる。
+
+**確認**:
+
+```bash
+# CNPG 管理 Secret とアプリ用 Secret のパスワードを比較する（例: backstage）
+CNPG_PASS=$(kubectl get secret backstage-db-app -n backstage -o jsonpath='{.data.password}' | base64 -d)
+APP_PASS=$(kubectl get secret backstage-db-credentials -n backstage -o jsonpath='{.data.password}' | base64 -d)
+[ "$CNPG_PASS" = "$APP_PASS" ] && echo "一致" || echo "不一致 → 修正が必要"
+```
+
+**修正**（アプリが使う Secret のパスワードに DB ロールを合わせる）:
+
+```bash
+# 例: backstage-db
+PASS=$(kubectl get secret backstage-db-credentials -n backstage \
+  -o jsonpath='{.data.password}' | base64 -d)
+kubectl exec backstage-db-1 -n backstage -c postgres -- \
+  psql -U postgres -c "ALTER ROLE app WITH PASSWORD '${PASS}';"
+
+# アプリを再起動して接続をリトライさせる
+kubectl rollout restart deployment/backstage -n backstage
+```
+
+> **根本原因**: recovery bootstrap は `initdb` をスキップするため、バックアップ取得後に Secret が外部で更新されても DB ロールには反映されない。CNPG が再起動時にロールを更新する initdb フローとは異なる挙動。
+
 ### ArgoCD の sync が OutOfSync のまま（CNPG Cluster）
 
 `ignoreDifferences` が `spec.bootstrap` / `spec.externalClusters` に設定されているため、これらのフィールドの差分は OutOfSync としてカウントされない。もし OutOfSync が表示される場合は `spec.bootstrap` 以外のフィールドに差分があるため、`argocd app diff <app-name>` で内容を確認すること。
