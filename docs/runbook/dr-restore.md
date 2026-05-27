@@ -175,6 +175,11 @@ WSL のデフォルト環境には git が入っていないため、まず手�
 ```bash
 sudo apt-get update && sudo apt-get install -y git
 git clone git@github.com:okccl/platform-infra.git ~/platform-infra
+```
+
+`bootstrap.sh` を実行する前に `~/platform-infra/scripts/repos.txt` を開き、クローン対象リポジトリの追加・削除・名前変更がないか確認する。
+
+```bash
 bash ~/platform-infra/scripts/bootstrap.sh
 source ~/.bashrc
 ```
