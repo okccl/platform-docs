@@ -40,7 +40,7 @@ Backstage TechDocs でのドキュメントサイト表示に対応していま�
 | [ADR-007](docs/adr/ADR-007-mise-tool-sharing.md) | ツール管理の共有戦略（aqua + AQUA_GLOBAL_CONFIG） | platform-infra | Accepted |
 | [ADR-008](docs/adr/ADR-008-observability-stack.md) | Observabilityスタックの選択（LGTMスタック） | platform-gitops | Accepted |
 | [ADR-009](docs/adr/ADR-009-network-ingress.md) | ネットワーク・Ingress設計（Gateway API / Envoy Gateway / Cilium） | platform-gitops / platform-infra | Accepted |
-| [ADR-010](docs/adr/ADR-010-idp.md) | IDP設計（Keycloak / Backstage 選定） | platform-gitops / backstage | 未着手 |
+| [ADR-010](docs/adr/ADR-010-idp.md) | IDP設計（Keycloak / Backstage 選定） | platform-gitops / backstage | Accepted |
 | [ADR-011](docs/adr/ADR-011-policy-engine.md) | ポリシーエンジンの選択（Kyverno） | platform-gitops | 未着手 |
 
 ---
@@ -70,11 +70,11 @@ bootstrap
 └─ ADR-007: aqua + AQUA_GLOBAL_CONFIG でツール定義を一元管理
       └─ platform-infra を source of truth / ArgoCD制約回避
 Observability
-└─ ADR-008: LGTMスタック選定（未着手）
+└─ ADR-008: LGTMスタック選定
 Networking
-└─ ADR-009: Gateway API / Envoy Gateway / Cilium 選定（未着手）
+└─ ADR-009: Gateway API / Envoy Gateway / Cilium 選定
 IDP
-└─ ADR-010: Keycloak / Backstage 選定（未着手）
+└─ ADR-010: Keycloak / Backstage 選定
 ポリシー管理
 └─ ADR-011: Kyverno 選定（未着手）
 ```
