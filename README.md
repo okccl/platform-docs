@@ -38,8 +38,8 @@ Backstage TechDocs でのドキュメントサイト表示に対応していま�
 | [ADR-005](docs/adr/ADR-005-crossplane.md) | インフラリソース管理の責務分離（Crossplane vs Terraform） | platform-gitops / platform-infra | Draft |
 | [ADR-006](docs/adr/ADR-006-postgresql-operator.md) | PostgreSQL Operatorの選択（CloudNativePG） | platform-gitops / platform-charts | Accepted |
 | [ADR-007](docs/adr/ADR-007-mise-tool-sharing.md) | ツール管理の共有戦略（aqua + AQUA_GLOBAL_CONFIG） | platform-infra | Accepted |
-| [ADR-008](docs/adr/ADR-008-observability-stack.md) | Observabilityスタックの選択（LGTMスタック） | platform-gitops | 未着手 |
-| [ADR-009](docs/adr/ADR-009-network-ingress.md) | ネットワーク・Ingress設計（Gateway API / Envoy Gateway / Cilium） | platform-gitops / platform-infra | 未着手 |
+| [ADR-008](docs/adr/ADR-008-observability-stack.md) | Observabilityスタックの選択（LGTMスタック） | platform-gitops | Accepted |
+| [ADR-009](docs/adr/ADR-009-network-ingress.md) | ネットワーク・Ingress設計（Gateway API / Envoy Gateway / Cilium） | platform-gitops / platform-infra | Accepted |
 | [ADR-010](docs/adr/ADR-010-idp.md) | IDP設計（Keycloak / Backstage 選定） | platform-gitops / backstage | 未着手 |
 | [ADR-011](docs/adr/ADR-011-policy-engine.md) | ポリシーエンジンの選択（Kyverno） | platform-gitops | 未着手 |
 
