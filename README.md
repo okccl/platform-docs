@@ -41,7 +41,7 @@ Backstage TechDocs でのドキュメントサイト表示に対応していま�
 | [ADR-008](docs/adr/ADR-008-observability-stack.md) | Observabilityスタックの選択（LGTMスタック） | platform-gitops | Accepted |
 | [ADR-009](docs/adr/ADR-009-network-ingress.md) | ネットワーク・Ingress設計（Gateway API / Envoy Gateway / Cilium） | platform-gitops / platform-infra | Accepted |
 | [ADR-010](docs/adr/ADR-010-idp.md) | IDP設計（Keycloak / Backstage 選定） | platform-gitops / backstage | Accepted |
-| [ADR-011](docs/adr/ADR-011-policy-engine.md) | ポリシーエンジンの選択（Kyverno） | platform-gitops | 未着手 |
+| [ADR-011](docs/adr/ADR-011-policy-engine.md) | ポリシーエンジンの選択（Kyverno） | platform-gitops | Accepted |
 
 ---
 
@@ -76,7 +76,7 @@ Networking
 IDP
 └─ ADR-010: Keycloak / Backstage 選定
 ポリシー管理
-└─ ADR-011: Kyverno 選定（未着手）
+└─ ADR-011: Kyverno 選定
 ```
 
 ---
